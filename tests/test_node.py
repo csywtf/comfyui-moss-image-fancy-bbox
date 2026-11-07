@@ -228,3 +228,56 @@ def test_no_regions_strips_previous(fake_comfy, monkeypatch):
     m1 = apply(node, patcher, regions_json((FULL, 1.0)))["result"][0]
     m2 = apply(node, m1, json.dumps({"version": 1, "regions": []}))["result"][0]
     assert not m2.injections and not m2.wrappers["apply_model"]
+
+
+# ------------------------------------------------------------------ layout prompt output
+def prompt_box(bbox=(-10, -10, 10, 10), **kw):
+    r = {"bbox": list(bbox), "caption": "a cat", "visible": True}
+    r.update(kw)
+    return r
+
+
+def test_prompt_only_boxes_work_in_strict_mode_without_discovery(fake_comfy):
+    patcher, node = fake_comfy
+    out = apply(node, patcher, json.dumps({"version": 1, "regions": [prompt_box()]}), caption="a garden")
+    m, prompt = out["result"]
+    layout = json.loads(prompt)
+    assert layout["summary"] == {"caption": "a garden"}
+    assert layout["items"] == [{"label": "object", "caption": "a cat", "bbox": [-10, -10, 10, 10]}]
+    assert not m.injections and out["ui"]["moss_regional_lora"][0]["status"] == "prompt-only"
+
+
+def test_lora_box_still_refused_in_strict_mode_without_discovery(fake_comfy):
+    patcher, node = fake_comfy
+    with pytest.raises(LayoutNotEstablished):
+        apply(node, patcher, json.dumps({"version": 1, "regions": [prompt_box(lora=LORA_NAME)]}), caption="x")
+
+
+def test_non_strict_unset_layout_still_outputs_prompt(fake_comfy):
+    patcher, node = fake_comfy
+    out = apply(node, patcher, json.dumps({"version": 1, "regions": [prompt_box(lora=LORA_NAME)]}),
+                strict=False, caption="x")
+    m, prompt = out["result"]
+    assert not m.injections and json.loads(prompt)["items"][0]["caption"] == "a cat"
+
+
+def test_prompt_and_lora_together(fake_comfy, monkeypatch):
+    patcher, node = fake_comfy
+    set_layout(monkeypatch)
+    regions = json.dumps({"version": 1, "regions": [
+        prompt_box(FULL, label="character", caption="Alice", lora=LORA_NAME),
+        prompt_box(caption="", lora=LORA_NAME),            # LoRA only
+        prompt_box(caption="a red ball"),                  # prompt only
+    ]})
+    out = apply(node, patcher, regions, caption="scene")
+    m, prompt = out["result"]
+    assert out["ui"]["moss_regional_lora"][0]["regions"] == 2
+    assert [i["caption"] for i in json.loads(prompt)["items"]] == ["Alice", "a red ball"]
+    assert list(m.injections) == ["moss_regional_lora"]
+
+
+def test_outputs_and_caption_input_declared(fake_comfy):
+    _, node = fake_comfy
+    cls = node.MossRegionalLora
+    assert cls.RETURN_TYPES == ("MODEL", "STRING")
+    assert list(cls.INPUT_TYPES()["required"])[-1] == "caption"   # appended: old workflows keep widget order

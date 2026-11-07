@@ -16,7 +16,15 @@ export const PALETTE = [
 
 export const EDITOR_DEFAULTS = { grid_divisions: 3, snap: false, reference_image: "", reference_opacity: 0.5 };
 
-const REGION_DEFAULTS = { name: "", bbox: [0, 0, 0, 0], lora: "", weight: 1.0, visible: true, locked: false, color: "", group: null };
+// A region does one or both jobs: a LoRA inside its box (`lora`, `weight`), and an item of the MOSS-Image
+// layout prompt (`label`, `caption`, `text` for text boxes, `palette`) when it has a caption or text.
+export const LABELS = ["object", "character", "text"];
+export const MAX_PALETTE = 5;
+
+const REGION_DEFAULTS = {
+  name: "", bbox: [0, 0, 0, 0], lora: "", weight: 1.0, visible: true, locked: false, color: "", group: null,
+  label: "object", caption: "", text: "", palette: [],
+};
 
 export function emptyState() {
   return { version: SCHEMA_VERSION, regions: [], groups: [], editor: { ...EDITOR_DEFAULTS } };
@@ -82,6 +90,12 @@ export function parseState(text) {
     if (typeof r.weight !== "number" || !Number.isFinite(r.weight)) {
       return { ok: false, error: `Region ${i + 1} (${r.name || r.id}): weight must be a number` };
     }
+    if (!LABELS.includes(r.label)) {
+      warnings.push(`Region "${r.name || r.id}" has unknown label "${r.label}"; the node will reject it`);
+    }
+    if (!Array.isArray(r.palette)) {
+      return { ok: false, error: `Region ${i + 1} (${r.name || r.id}): palette must be a list of colours` };
+    }
   }
   const gids = new Set();
   for (let i = 0; i < data.groups.length; i++) {
@@ -107,6 +121,11 @@ export function serializeState(state) {
 
 export function cloneState(state) {
   return JSON.parse(JSON.stringify(state));
+}
+
+/** True if the region becomes a layout-prompt item (it has a caption, or text to render). */
+export function hasPrompt(r) {
+  return !!(String(r.caption || "").trim() || (r.label === "text" && String(r.text || "").trim()));
 }
 
 /** Regions the node will apply, in order (hidden excluded: 8.6d). */
@@ -170,6 +189,10 @@ export function addRegion(state, bbox, fields = {}) {
     locked: false,
     color: PALETTE[(n - 1) % PALETTE.length],
     group: null,
+    label: "object",
+    caption: "",
+    text: "",
+    palette: [],
     ...fields,
   });
   return { state: s, id };
