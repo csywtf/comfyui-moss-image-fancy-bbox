@@ -54,8 +54,8 @@ export function drawSparkline(canvas, points, dashed, color) {
 
 export class CurvePanel {
   /**
-   * host: { region(): selected region or null, legacy(): node-ramp curve, readOnly(): bool,
-   *         snap(): bool, commitCurve(points), color(region): css colour }
+   * host: { target(): {curve, name} being edited (curve null/absent = node ramp) or null,
+   *         legacy(): node-ramp curve, readOnly(): bool, snap(): bool, commitCurve(points), color(): css colour }
    */
   constructor(host) {
     this.host = host;
@@ -65,7 +65,7 @@ export class CurvePanel {
     this.hover = null;
     this.title = el("span", { class: "mrl-curve-title" });
     this.presets = Object.keys(C.PRESETS).map((name) =>
-      el("button", { text: name, title: `Set this box's curve to "${name}"`, onclick: () => this.commit(C.PRESETS[name]()) }),
+      el("button", { text: name, title: `Set the curve to "${name}"`, onclick: () => this.commit(C.PRESETS[name]()) }),
     );
     this.holdBtn = el("button", { text: "Hold", title: "Selected segment: keep its start value, then jump (hard step)", onclick: () => this.toggleHold() });
     this.straightBtn = el("button", { text: "Straight", title: "Selected segment: remove its bend", onclick: () => this.straighten() });
@@ -98,7 +98,7 @@ export class CurvePanel {
 
   // ------------------------------------------------------------------ data
   region() {
-    return this.host.region();
+    return this.host.target();
   }
 
   /** {points, own}: the curve being shown, and whether the box has its own (false = node ramp). */
@@ -303,8 +303,8 @@ export class CurvePanel {
     const ro = this.host.readOnly();
     if (cur && this.sel && (this.sel.index >= cur.points.length || (this.sel.type === "segment" && this.sel.index + 1 >= cur.points.length))) this.sel = null;
     this.title.textContent = r
-      ? `Strength over the run — ${r.name || r.id}${cur.own ? "" : " (node ramp; edit to give this box its own curve)"}`
-      : "Strength over the run — select a box";
+      ? `Strength over the run${cur.own ? "" : " (node ramp; edit to give it its own curve)"}`
+      : "Strength over the run";
     for (const b of this.presets) b.disabled = !r || ro;
     const segSel = !!(r && this.sel?.type === "segment" && !ro);
     this.holdBtn.disabled = !segSel;
@@ -367,7 +367,7 @@ export class CurvePanel {
     const cur = this.current();
     if (!cur) return;
     const r = this.region();
-    const color = this.host.color(r) || "#9cf";
+    const color = this.host.color() || "#9cf";
     // curve
     ctx.strokeStyle = color;
     ctx.lineWidth = 2;

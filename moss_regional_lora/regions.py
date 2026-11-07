@@ -1,17 +1,17 @@
 """Parse the editor's region JSON into the list the node applies.
 
 The JSON is authored by the in-node editor (web/state.js) and may be hand-edited.
-Schema (version 1)::
+Schema (version 2)::
 
     {
-      "version": 1,
+      "version": 2,
       "regions": [
         {"id": "...", "name": "...", "bbox": [y_min, x_min, y_max, x_max],
-         "lora": "file.safetensors", "weight": 1.0,
+         "loras": [{"lora": "dir/file.safetensors", "weight": 1.0,
+                    "curve": [{"x": 0, "y": 1}, ...]}, ...],   (curve: see curve.py; absent = node ramp)
          "visible": true, "locked": false, "color": "#rrggbb", "group": null | "<group id>",
          "label": "object" | "character" | "text", "caption": "...", "text": "...",
          "palette": ["#RRGGBB", ...],
-         "curve": [{"x": 0, "y": 1}, ...]   (strength over the run; see curve.py; absent = node ramp),
          ...unknown fields are preserved by the editor and ignored here...}
       ],
       "groups": [{"id": "...", "name": "...", "collapsed": false}],
@@ -22,8 +22,12 @@ Array order is list order: index 0 is the top row of the layer list and is drawn
 first (underneath); the last element is drawn last (on top). Hidden regions are
 excluded from the output entirely (8.6d). Groups have no effect on output.
 
+Version 1 regions carried a single LoRA as top-level ``lora`` / ``weight`` / ``curve`` fields; they are
+still read (as a one-entry ``loras`` list) when a region has no ``loras`` list.
+
 A region does one or both of two jobs:
-  * LoRA: it has a ``lora`` and a non-zero ``weight`` -> the LoRA is applied inside its box.
+  * LoRA: each ``loras`` entry with a file and a non-zero ``weight`` is applied inside the box, as its
+    own gated delta with its own strength curve.
   * Prompt: it has a ``caption`` (or, for a ``"text"`` label, text to render) -> it becomes an item of
     the MOSS-Image layout prompt, exactly as ComfyUI's MOSS-Image Layout Prompt node would write it.
 """
@@ -38,7 +42,7 @@ from typing import List, Optional, Tuple
 from .curve import CurveError, CurvePoint, parse_curve
 from .geometry import GeometryError, validate_bbox
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 LABELS = ("object", "character", "text")
 MAX_PALETTE = 5   # Create Bounding Boxes keeps at most five colours per box
 
@@ -134,13 +138,8 @@ def parse_document(text: str) -> ParsedRegions:
             bbox = validate_bbox(r.get("bbox"))
         except GeometryError as e:
             raise RegionsError(f"region {i} ({name}): {e}") from None
-        lora = r.get("lora") or ""
-        if not isinstance(lora, str):
-            raise RegionsError(f"region {i} ({name}): 'lora' must be a filename string")
-        weight = r.get("weight", 1.0)
-        if isinstance(weight, bool) or not isinstance(weight, (int, float)) or not math.isfinite(weight):
-            raise RegionsError(f"region {i} ({name}): 'weight' must be a finite number, got {weight!r}")
         where = f"region {i} ({name})"
+        entries = _lora_entries(r, where)
         label = r.get("label") or "object"
         if label not in LABELS:
             raise RegionsError(f"{where}: 'label' must be one of {LABELS}, got {label!r}")
@@ -151,18 +150,48 @@ def parse_document(text: str) -> ParsedRegions:
         if has_prompt:
             items.append(PromptItem(name=name, bbox=bbox, label=label, caption=caption, text=render, palette=palette))
 
-        if not lora:
-            if not has_prompt:
-                notes.append(f"region '{name}' has neither a LoRA nor a caption; it does nothing")
-            continue
-        if weight == 0:
-            notes.append(f"region '{name}' has LoRA weight 0; LoRA skipped")
-            continue
-        curve = None
-        if r.get("curve") is not None:
-            try:
-                curve = parse_curve(r["curve"], where)
-            except CurveError as e:
-                raise RegionsError(str(e)) from None
-        out.append(RegionSpec(index=len(out), name=name, bbox=bbox, lora=lora, weight=float(weight), curve=curve))
+        active = [e for e in entries if e[0] and e[1] != 0]
+        if not active and not has_prompt:
+            notes.append(f"region '{name}' has neither a LoRA nor a caption; it does nothing")
+        for lora, weight, curve in entries:
+            if not lora:
+                if weight:
+                    notes.append(f"region '{name}' has a LoRA entry with no file selected; skipped")
+                continue
+            if weight == 0:
+                notes.append(f"region '{name}': {lora} has weight 0; skipped")
+                continue
+            # one spec per (box, LoRA): each gets its own mask copy and its own curve
+            out.append(RegionSpec(index=len(out), name=name, bbox=bbox, lora=lora, weight=weight, curve=curve))
     return ParsedRegions(out, items, notes)
+
+
+def _lora_entry(e, where) -> Tuple[str, float, Optional[Tuple[CurvePoint, ...]]]:
+    if not isinstance(e, dict):
+        raise RegionsError(f"{where}: each 'loras' entry must be an object")
+    lora = e.get("lora") or ""
+    if not isinstance(lora, str):
+        raise RegionsError(f"{where}: 'lora' must be a filename string")
+    weight = e.get("weight", 1.0)
+    if isinstance(weight, bool) or not isinstance(weight, (int, float)) or not math.isfinite(weight):
+        raise RegionsError(f"{where}: 'weight' must be a finite number, got {weight!r}")
+    curve = None
+    if e.get("curve") is not None:
+        try:
+            curve = parse_curve(e["curve"], where)
+        except CurveError as err:
+            raise RegionsError(str(err)) from None
+    return lora, float(weight), curve
+
+
+def _lora_entries(r, where) -> List[Tuple[str, float, Optional[Tuple[CurvePoint, ...]]]]:
+    """The region's LoRAs: its ``loras`` list, or (version 1) its top-level lora/weight/curve."""
+    if r.get("loras") is not None:
+        if not isinstance(r["loras"], list):
+            raise RegionsError(f"{where}: 'loras' must be a list")
+        return [_lora_entry(e, where) for e in r["loras"]]
+    if r.get("lora"):
+        return [_lora_entry({k: r.get(k) for k in ("lora", "weight", "curve") if k in r}, where)]
+    if "lora" in r and r["lora"] is not None and not isinstance(r["lora"], str):
+        raise RegionsError(f"{where}: 'lora' must be a filename string")
+    return []

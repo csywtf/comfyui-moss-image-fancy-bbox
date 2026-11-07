@@ -5,8 +5,9 @@ One node to draw the boxes of a MOSS-Image generation. Each box can carry:
 - a **layout-prompt item**: a label (object, character or text), a caption, text to render and a
   colour palette, written into the MOSS-Image layout prompt exactly as ComfyUI's *Create Bounding
   Boxes* + *MOSS-Image Layout Prompt* would;
-- a **LoRA** applied only inside the box, so two character LoRAs in two boxes stay two different
-  people and a character's look stays out of the background;
+- one or more **LoRAs** applied only inside the box, each with its own strength and strength-over-time
+  curve, so two character LoRAs in two boxes stay two different people and a character's look stays
+  out of the background;
 - or **both**.
 
 The node outputs the patched MODEL and the finished layout prompt STRING.
@@ -97,11 +98,28 @@ skipped, and the count is shown under the editor after a run.
 
 ## Region editor
 
-The canvas under the `regions` text box shows the output canvas with a grid (a third of the canvas
-by default) and the centre lines. The `regions` text is the source of truth: the canvas only draws
-it and writes it back after each edit. You can also edit or paste the JSON by hand and the canvas
-follows. If the text stops being valid JSON, the editor turns red and becomes read-only until it is
-fixed; it never overwrites your text.
+The editor under the `regions` text box has four parts:
+
+```
+[tools] [layers] [          canvas          ] [properties]
+```
+
+The `regions` text is the source of truth: the editor only draws it and writes it back after each
+edit. You can also edit or paste the JSON by hand and the editor follows. If the text stops being
+valid JSON, the editor turns red and becomes read-only until it is fixed; it never overwrites your
+text.
+
+- **Tools** (left): **Select** (V) clicks, moves and resizes boxes; clicking the background deselects.
+  **Box** (B) draws a new box, then switches back to Select with the new box selected.
+- **Layers**: one row per box, with visibility, colour, name, badges (`2L` = two LoRAs, `✎` = in the
+  layout prompt, ⚠ = extends past the canvas), lock and ▲ / ▼. Click a row to select the box.
+  **+ Group** makes a group (with the selected boxes in it); group headers collapse, rename, show all,
+  hide all, move and delete all.
+- **Canvas**: the output canvas with a grid (a third of the canvas by default) and the centre lines.
+- **Properties** (right): for the selected box, its name, colour, visibility, lock, box coordinates
+  (editable), group, layout-prompt fields, and its **LoRA list**. With nothing selected it shows the
+  canvas settings: grid, snap, and an optional reference image from ComfyUI's `input` folder with an
+  opacity slider (a drawing aid only).
 
 Boxes are stored as `[y_min, x_min, y_max, x_max]`, integer pixels, measured from the canvas centre
 with y pointing down. This is the same convention as ComfyUI's *MOSS-Image Layout Prompt* node. The
@@ -113,40 +131,41 @@ put the background first and the foreground last, as with *Create Bounding Boxes
 organise rows; they change nothing about the output.
 
 **What a box does** is decided by its fields. It is a layout-prompt item when it has a caption (or,
-for a `text` box, text to render); it applies a LoRA when one is selected with a non-zero weight. A
-box with only a LoRA leaves the prompt alone; a box with only a caption leaves the model alone.
+for a `text` box, text to render); each LoRA in its list with a file and a non-zero strength is
+applied inside it. A box with only LoRAs leaves the prompt alone; a box with only a caption leaves the
+model alone.
 
 | action | how |
 |---|---|
-| new region | drag on empty canvas |
-| move | drag the region body |
-| resize | drag one of the 8 handles of the selected region |
-| square | hold **Shift** while creating or resizing |
-| resize from centre | hold **Alt** while creating or resizing |
+| new box | **Box** tool (B), drag on the canvas |
+| select | **Select** tool (V), click a box or its layer row; click the background to deselect |
+| move | drag the box body (Select tool) |
+| resize | drag one of the 8 handles of the selected box |
+| square | hold **Shift** while drawing or resizing |
+| resize from centre | hold **Alt** while drawing or resizing |
 | bypass snapping | hold **Ctrl** (**Cmd** on macOS) while dragging, with Snap on |
 | nudge 1 px / 10 px | **Arrow keys** / **Shift + Arrow keys** |
-| delete selection | **Delete** or **Backspace** (locked regions are kept) |
+| delete selection | **Delete** or **Backspace** (locked boxes are kept), or **Delete box** in properties |
 | undo / redo | **Ctrl/Cmd + Z** / **Ctrl/Cmd + Shift + Z** (or **Ctrl + Y**) |
-| multi-select | **Shift**- or **Ctrl/Cmd**-click regions or rows |
+| multi-select | **Shift**- or **Ctrl/Cmd**-click boxes or rows |
+| deselect / cancel | **Esc** |
 | reorder | ▲ / ▼ buttons, or drag a row by its ⠿ grip |
-| group | **+ Group** (puts the selected regions in a new group), or pick a group in a row |
 
-The keyboard shortcuts work while the canvas has focus (click it first). A row's first line has a
-visibility toggle, colour, name, box readout, LoRA, weight, strength-curve preview, lock, group, move
-and delete controls; its
-second line has the layout label, caption, text to render (`text` boxes) and up to five palette
-colours. The canvas label shows what each box does (`LoRA`, its label, or both). ⚠ marks a
-box that extends past the canvas (allowed, but usually a mistake). Locked regions cannot be moved
-or resized on the canvas. Group headers collapse, rename, show all, hide all, move and delete all.
-An optional reference image from ComfyUI's `input` folder can be shown under the boxes with an
-opacity slider; it is a drawing aid only.
+The keyboard shortcuts work while the canvas has focus (click it first). Locked boxes cannot be moved
+or resized on the canvas.
+
+### LoRAs on a box
+
+Each box has a list of LoRAs. A row shows the LoRA's file name, its strength and a small graph of its
+strength over the run. Click the name to pick a file from the full list of paths (type to filter).
+**+ Add LoRA** adds a row; ✕ removes it. Each LoRA is applied inside the box as its own gated delta,
+with its own strength and curve. Workflows saved with one LoRA per box load as a one-row list.
 
 ### Strength curves
 
-Each box has its own curve for how strongly its LoRA applies over the sampling run: left to right is
-0–100% of the steps, bottom to top is 0–100% of the box's weight (a weight of −2 at 50% strength
-applies −1). The panel under the canvas edits the selected box's curve; each layer row shows a small
-preview. New boxes start at full strength for the whole run.
+Click a LoRA's small graph to open its curve. Left to right is 0–100% of the steps, bottom to top is
+0–100% of that LoRA's strength (a strength of −2 at 50% applies −1). New LoRAs start at full strength
+for the whole run.
 
 | action | how |
 |---|---|
@@ -160,7 +179,7 @@ preview. New boxes start at full strength for the whole run.
 
 Shape-type LoRAs (a body or weight slider) usually need strength in the early steps, where shape is
 decided; character LoRAs that fight the layout can fade in later. Curve edits are undoable like any
-other edit. Boxes saved before curves existed show a dashed curve: they keep using the node's
+other edit. LoRAs saved before curves existed show a dashed graph: they keep using the node's
 `ramp_start`/`ramp_end` until you edit their curve.
 
 ## Layout discovery (after ComfyUI updates)

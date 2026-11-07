@@ -1,5 +1,5 @@
 {
-  "version": 1,
+  "version": 2,
   "regions": [
     {
       "id": "r-alice",
@@ -10,8 +10,43 @@
         380,
         -40
       ],
-      "lora": "characters/alice_v2.safetensors",
-      "weight": 0.85,
+      "loras": [
+        {
+          "lora": "characters/alice_v2.safetensors",
+          "weight": 0.85,
+          "curve": [
+            {
+              "x": 0,
+              "y": 0,
+              "bend": -0.5
+            },
+            {
+              "x": 0.3,
+              "y": 1,
+              "hold": true
+            },
+            {
+              "x": 0.8,
+              "y": 0.25
+            },
+            {
+              "x": 1,
+              "y": 0.25
+            }
+          ]
+        },
+        {
+          "lora": "styles/watercolor.safetensors",
+          "weight": 0.35,
+          "curve": [
+            {
+              "x": 0,
+              "y": 1
+            }
+          ],
+          "x_entry_note": "kept"
+        }
+      ],
       "visible": true,
       "locked": false,
       "color": "#e6194b",
@@ -29,27 +64,7 @@
           "a",
           "b"
         ]
-      },
-      "curve": [
-        {
-          "x": 0,
-          "y": 0,
-          "bend": -0.5
-        },
-        {
-          "x": 0.3,
-          "y": 1,
-          "hold": true
-        },
-        {
-          "x": 0.8,
-          "y": 0.25
-        },
-        {
-          "x": 1,
-          "y": 0.25
-        }
-      ]
+      }
     },
     {
       "id": "r-bob",
@@ -60,8 +75,12 @@
         400,
         470
       ],
-      "lora": "characters/bob.safetensors",
-      "weight": 1,
+      "loras": [
+        {
+          "lora": "characters/bob.safetensors",
+          "weight": 1
+        }
+      ],
       "visible": true,
       "locked": true,
       "color": "#4363d8",
@@ -80,8 +99,18 @@
         -200,
         600
       ],
-      "lora": "styles/sky.safetensors",
-      "weight": -0.5,
+      "loras": [
+        {
+          "lora": "styles/sky.safetensors",
+          "weight": -0.5,
+          "curve": [
+            {
+              "x": 0,
+              "y": 1
+            }
+          ]
+        }
+      ],
       "visible": false,
       "locked": false,
       "color": "#42d4f4",
@@ -93,13 +122,7 @@
         "#FF00FF",
         "#00FFFF"
       ],
-      "x_extra_number": 3.25,
-      "curve": [
-        {
-          "x": 0,
-          "y": 1
-        }
-      ]
+      "x_extra_number": 3.25
     }
   ],
   "groups": [

@@ -9,7 +9,9 @@
 
 import { FULL, normalize as normalizeCurve } from "./curve.js";
 
-export const SCHEMA_VERSION = 1;
+// Version 2: a region's LoRAs are a list, "loras": [{lora, weight, curve}]. Version 1 regions carried
+// one LoRA as top-level lora/weight/curve; they are read as a one-entry list and converted on first edit.
+export const SCHEMA_VERSION = 2;
 
 export const PALETTE = [
   "#e6194b", "#3cb44b", "#4363d8", "#f58231", "#911eb4", "#42d4f4",
@@ -24,7 +26,7 @@ export const LABELS = ["object", "character", "text"];
 export const MAX_PALETTE = 5;
 
 const REGION_DEFAULTS = {
-  name: "", bbox: [0, 0, 0, 0], lora: "", weight: 1.0, visible: true, locked: false, color: "", group: null,
+  name: "", bbox: [0, 0, 0, 0], visible: true, locked: false, color: "", group: null,
   label: "object", caption: "", text: "", palette: [],
 };
 
@@ -89,22 +91,13 @@ export function parseState(text) {
     if (b[2] < b[0] || b[3] < b[1]) {
       return { ok: false, error: `Region ${i + 1} (${r.name || r.id}): bbox has max < min` };
     }
-    if (typeof r.weight !== "number" || !Number.isFinite(r.weight)) {
-      return { ok: false, error: `Region ${i + 1} (${r.name || r.id}): weight must be a number` };
-    }
+    const err = validateLoras(r);
+    if (err) return { ok: false, error: `Region ${i + 1} (${r.name || r.id}): ${err}` };
     if (!LABELS.includes(r.label)) {
       warnings.push(`Region "${r.name || r.id}" has unknown label "${r.label}"; the node will reject it`);
     }
     if (!Array.isArray(r.palette)) {
       return { ok: false, error: `Region ${i + 1} (${r.name || r.id}): palette must be a list of colours` };
-    }
-    // no "curve" = the node's ramp_start/ramp_end (workflows saved before curves); kept absent on purpose
-    if (r.curve !== undefined && r.curve !== null) {
-      try {
-        normalizeCurve(r.curve);
-      } catch (e) {
-        return { ok: false, error: `Region ${i + 1} (${r.name || r.id}): ${e.message}` };
-      }
     }
   }
   const gids = new Set();
@@ -123,6 +116,61 @@ export function parseState(text) {
   }
   for (const [k, v] of Object.entries(EDITOR_DEFAULTS)) if (!(k in data.editor)) data.editor[k] = v;
   return { ok: true, state: data, warnings };
+}
+
+function validateEntry(e) {
+  if (!isPlainObject(e)) return "each LoRA entry must be an object";
+  if (e.lora !== undefined && e.lora !== null && typeof e.lora !== "string") return "lora must be a filename";
+  if (e.weight !== undefined && (typeof e.weight !== "number" || !Number.isFinite(e.weight))) return "weight must be a number";
+  // no "curve" = the node's ramp_start/ramp_end (saved before curves); kept absent on purpose
+  if (e.curve !== undefined && e.curve !== null) {
+    try {
+      normalizeCurve(e.curve);
+    } catch (err) {
+      return err.message;
+    }
+  }
+  return null;
+}
+
+function validateLoras(r) {
+  if (r.loras !== undefined && r.loras !== null) {
+    if (!Array.isArray(r.loras)) return "loras must be a list";
+    for (const e of r.loras) {
+      const err = validateEntry(e);
+      if (err) return err;
+    }
+    return null;
+  }
+  return validateEntry({ lora: r.lora, weight: r.weight, curve: r.curve });
+}
+
+/** A region's LoRA entries [{lora, weight, curve?}] (version-1 boxes read as a one-entry list). */
+export function lorasOf(r) {
+  if (Array.isArray(r.loras)) return r.loras;
+  if (r.lora) {
+    const e = { lora: r.lora, weight: typeof r.weight === "number" ? r.weight : 1.0 };
+    if (r.curve !== undefined && r.curve !== null) e.curve = r.curve;
+    return [e];
+  }
+  return [];
+}
+
+/** Replace a region's LoRA list; drops the version-1 single-LoRA fields. */
+export function setLoras(state, id, entries) {
+  const s = cloneState(state);
+  const r = s.regions.find((x) => x.id === id);
+  if (r) {
+    r.loras = entries.map((e) => ({ ...e }));
+    delete r.lora;
+    delete r.weight;
+    delete r.curve;
+  }
+  return s;
+}
+
+export function newLoraEntry(lora = "") {
+  return { lora, weight: 1.0, curve: FULL.map((p) => ({ ...p })) };
 }
 
 export function serializeState(state) {
@@ -193,8 +241,7 @@ export function addRegion(state, bbox, fields = {}) {
     id,
     name: `Region ${n}`,
     bbox: bbox.map((v) => Math.round(v)),
-    lora: "",
-    weight: 1.0,
+    loras: [],
     visible: true,
     locked: false,
     color: PALETTE[(n - 1) % PALETTE.length],
@@ -203,7 +250,6 @@ export function addRegion(state, bbox, fields = {}) {
     caption: "",
     text: "",
     palette: [],
-    curve: FULL.map((p) => ({ ...p })),
     ...fields,
   });
   return { state: s, id };
