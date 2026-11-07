@@ -1025,9 +1025,6 @@ class RegionEditor {
     name.addEventListener("change", () => upd({ name: name.value }));
     const color = el("input", { type: "color", value: S.regionColor(this.state, i), title: "Layer colour" });
     color.addEventListener("change", () => upd({ color: color.value }));
-    const lock = el("input", { type: "checkbox" });
-    lock.checked = !!r.locked;
-    lock.addEventListener("change", () => upd({ locked: lock.checked }));
     const labels = ["y_min", "x_min", "y_max", "x_max"];
     const inputs = labels.map((l, k) => el("input", { type: "number", step: "1", value: String(r.bbox[k]), title: `${l} (px from the canvas centre, y down)` }));
     for (const inp of inputs) {
@@ -1059,7 +1056,7 @@ class RegionEditor {
         }),
       ]),
       this.field("Name", name),
-      el("div", { class: "mrl-field" }, [el("span", { text: "Colour" }), color, el("label", {}, [lock, " locked"])]),
+      el("div", { class: "mrl-field" }, [el("span", { text: "Colour" }), color]),
       el("div", { class: "mrl-hint", text: "bbox [y_min, x_min, y_max, x_max], px from the canvas centre (y down)" }),
       el(
         "div",

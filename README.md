@@ -118,7 +118,7 @@ text.
   **+ Group** makes a group (with the selected boxes in it); group headers collapse, rename, show all,
   hide all, move and delete all.
 - **Canvas**: the output canvas with a grid (a third of the canvas by default) and the centre lines.
-- **Properties** (right): for the selected box, its name, colour, lock, box coordinates
+- **Properties** (right): for the selected box, its name, colour, box coordinates
   (editable), group, layout-prompt fields, and its **LoRA list**. With nothing selected it shows the
   canvas settings: grid, snap, and an optional reference image from ComfyUI's `input` folder with an
   opacity slider (a drawing aid only).
