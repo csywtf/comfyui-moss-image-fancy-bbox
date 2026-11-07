@@ -11,10 +11,12 @@ One node to draw the boxes of a MOSS-Image generation. Each box can carry:
 
 The node outputs the patched MODEL and the finished layout prompt STRING.
 
-> **LoRA boxes need the layout discovery below first; until then the node refuses to apply them.**
-> It needs three facts about MOSS-Image's transformer sequence that must be measured on your machine.
-> A wrong guess would produce a node that *appears* to work (the LoRA still changes the picture) while
-> the mask sits on the wrong tokens. Prompt-only boxes don't touch the model and work right away.
+> **LoRA boxes need a one-time layout discovery first; until then the node refuses to apply them.**
+> It needs three facts about MOSS-Image's transformer sequence that are measured, not assumed: queue
+> the included **MOSS-Image Layout Discovery** node once and copy its three values into the main
+> node's advanced options (see *Layout discovery* below). A wrong guess would produce a node that
+> *appears* to work (the LoRA still changes the picture) while the mask sits on the wrong tokens.
+> Prompt-only boxes don't touch the model and work right away.
 
 ## Install
 
@@ -59,11 +61,12 @@ Inputs:
 |---|---|
 | `width`, `height` | output canvas in pixels; must match the latent being sampled (checked at run time) |
 | `regions` | the region list as JSON, edited with the canvas below it (see *Region editor*) |
-| `vae_downscale`, `patch_size` | pixels per latent cell and latent cells per token; the discovery tool prints both (ComfyUI's MOSS-Image latent format is 16 px per cell) |
+| `vae_downscale`, `patch_size` | pixels per latent cell and latent cells per token; the *MOSS-Image Layout Discovery* report gives both (ComfyUI's MOSS-Image latent format is 16 px per cell) |
 | `ramp_start`, `ramp_end` | the LoRA fades in from 0 at `ramp_start` of the steps to full at `ramp_end` (default 0.15 → 1.0), so it fills the layout instead of fighting it |
 | `steps` | total sampling steps, for the ramp |
 | `strict` | on: refuse to apply LoRAs while the layout is unverified and raise on any alignment problem. Off: pass the model through untouched (with a warning) instead. Prompt-only boxes work either way |
 | `caption` | description of the whole image: the layout prompt's summary caption. With no captioned boxes, `prompt` is just this text |
+| `text_position`, `image_order`, `source_tokens` | **advanced options**: the layout values reported by the *MOSS-Image Layout Discovery* node. Left at "not set", each falls back to `moss_regional_lora/layout_config.py` (unset by default) |
 
 ## Why the weights are never merged
 
@@ -136,47 +139,59 @@ or resized on the canvas. Group headers collapse, rename, show all, hide all, mo
 An optional reference image from ComfyUI's `input` folder can be shown under the boxes with an
 opacity slider; it is a drawing aid only.
 
-## Layout discovery (required once per checkpoint)
+## Layout discovery (once)
 
-The node needs to know, for your checkpoint: which positions of the transformer sequence are image
-tokens, whether the text comes before or after them, whether image tokens are in plain row-by-row
-order, and where an edit pipeline's source-image tokens go. `tools/discover_moss_layout.py`
-measures all of this with ComfyUI's own loaders and prints the values to set.
+The node needs to know which positions of the transformer sequence are image tokens, whether the
+prompt comes before or after them, whether image tokens are in plain row-by-row order, and where an
+edit pipeline's source-image tokens go. The **MOSS-Image Layout Discovery** node measures this on your
+loaded model and reports the values to set. It changes nothing; it only measures.
 
-1. Make sure the MOSS-Image checkpoint generates normally in ComfyUI, and close ComfyUI so the GPU is
-   free.
-2. Open a terminal in the ComfyUI folder and activate the Python environment ComfyUI uses.
-3. Pick any image to act as an edit source, for example one from `ComfyUI/input/`.
-4. Run the full discovery. With an all-in-one checkpoint:
+The values come from ComfyUI's MOSS-Image code, not from the weights, so one run covers every
+MOSS-Image checkpoint. Re-run it after a ComfyUI update.
 
-   ```bash
-   python custom_nodes/comfyui-moss-image-fancy-bbox/tools/discover_moss_layout.py --mode all --checkpoint YOUR_MOSS_CHECKPOINT.safetensors --edit-image input/YOUR_IMAGE.png --out moss_probe
+1. Add **MOSS-Image Layout Discovery** (`model_patches/moss_image`). Connect your MOSS-Image MODEL
+   (straight from the loader, without other patches), CLIP and VAE.
+2. Connect any image (for example a *Load Image* node) to `edit_image`, so the report also covers
+   edit workflows.
+3. Queue it on its own. It runs a few one-step passes plus three full generations at the canvas
+   size, so it takes a few minutes.
+4. Read the report on the node. It ends with the values to set:
+
+   ```
+   ---- set these on MOSS-Image Regional LoRA + Layout Prompt ----
+   advanced options:
+     text_position = ...
+     image_order   = ...
+     source_tokens = ...
+   inputs:
+     vae_downscale = ...
+     patch_size    = ...
    ```
 
-   With separate files, replace `--checkpoint ...` with
-   `--unet MOSS_DIFFUSION_MODEL.safetensors --clip MOSS_TEXT_ENCODER.safetensors --vae MOSS_VAE.safetensors`.
-   Names are looked up in ComfyUI's model folders; full paths also work (use full paths for models in
-   `extra_model_paths.yaml` locations). If you use an edit workflow, also add one
-   `--edit-method NAME` per `reference_latents_method` your edit node sets (for ComfyUI's
-   *Text Encode MOSS-Image Edit* node these are listed in `EDIT_FORMATS` in
-   `comfy_extras/nodes_moss_image.py`).
-5. Read the `[blocks]` lines. If it says it cannot choose a block list, re-run with
-   `--blocks <name>` using the list it printed that holds the main transformer blocks.
-6. Read the `[shapes]` lines: one patch size must say **MATCH** (sequence length minus image tokens
-   equals the text length).
-7. Read the `[order]` lines: they say whether text is a PREFIX or a SUFFIX of the sequence.
-8. Open the images in `moss_probe/`. `diff_r0_c0.png` and `diff_r0_c1.png` show where perturbing one
-   image token changed the picture; the green square marks where raster order predicts it. The
-   `[probe]` lines say whether the change landed there. Both probes must confirm.
-9. Read the `[edit]` lines: they say whether the source image added tokens to the sequence and where.
-10. Copy the block printed under `=== configuration ===` into
-    `custom_nodes/comfyui-moss-image-fancy-bbox/moss_regional_lora/layout_config.py`, and set the
-    node's `vae_downscale` and `patch_size` inputs to the printed values.
-11. If any value printed as `None  # NOT ESTABLISHED`, or a `problems` section appears, do not
-    guess: open an issue with the whole output and the `moss_probe/` images.
+5. On **MOSS-Image Regional LoRA + Layout Prompt**, open the advanced options and set
+   `text_position`, `image_order` and `source_tokens` to those values; set `vae_downscale` and
+   `patch_size` to the reported numbers. They are saved with the workflow; no restart is needed.
+6. Check the preview images: in each `diff_r0_c…` image, the bright spot (where perturbing one image
+   token changed the picture) should sit inside the green square (where row-by-row order puts it).
+   The report says whether it did. Both probes must confirm.
+7. If any value says `NOT ESTABLISHED`, or a `problems` section appears, don't guess: open an issue
+   with the whole report and the images. If the change in the probe images isn't clear, raise the
+   advanced `probe_strength`.
 
-Single steps can be re-run with `--mode shapes`, `--mode order`, `--mode probe` (with
-`--probe-row`, `--probe-col`, `--text-position`) or `--mode edit`. Run with `--help` for every option.
+Advanced options on the discovery node: `edit_methods` (the `reference_latents_method` values tested
+in the edit pass; the default covers both kinds of format of ComfyUI's *Text Encode MOSS-Image Edit*
+node), `probe_strength`, `patch_size` (0 = infer) and `blocks` (the transformer block list, if it
+can't be detected).
+
+**Without the UI:** `tools/discover_moss_layout.py` runs the same passes from a terminal, using
+ComfyUI's Python environment, and saves the images to a folder. Run it from the ComfyUI folder with
+ComfyUI closed, for example with separate model files (full paths also work):
+
+```bash
+python custom_nodes/comfyui-moss-image-fancy-bbox/tools/discover_moss_layout.py --mode all --unet MOSS_MODEL.safetensors --clip MOSS_TEXT_ENCODER.safetensors --vae MOSS_VAE.safetensors --edit-image input/ANY_IMAGE.png --edit-method default --edit-method index_timestep_zero --out moss_probe
+```
+
+Use `--checkpoint FILE` for an all-in-one checkpoint and `--help` for every option.
 
 ## Tests
 

@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from types import SimpleNamespace
 from typing import List, Optional, Sequence
 
 DISCOVERY_TOOL = "tools/discover_moss_layout.py"
+DISCOVERY_NODE = "MOSS-Image Layout Discovery"
+NOT_SET = "not set"   # node option value meaning "fall back to layout_config.py"
 
 TEXT_POSITIONS = ("prefix", "suffix")
 IMAGE_ORDERS = ("raster",)
@@ -16,6 +19,8 @@ _CONSTANTS = {
     "IMAGE_ORDER": IMAGE_ORDERS,
     "SOURCE_TOKENS": SOURCE_TOKEN_POSITIONS,
 }
+# node advanced option name for each constant
+OPTION_NAMES = {"TEXT_POSITION": "text_position", "IMAGE_ORDER": "image_order", "SOURCE_TOKENS": "source_tokens"}
 
 
 class LayoutNotEstablished(RuntimeError):
@@ -70,8 +75,20 @@ def unset_constants(config) -> List[str]:
     return [name for name in _CONSTANTS if getattr(config, name, None) is None]
 
 
+def resolve_config(text_position: str = NOT_SET, image_order: str = NOT_SET, source_tokens: str = NOT_SET,
+                   fallback=None):
+    """Node advanced options win; an option left at "not set" falls back to layout_config.py."""
+    if fallback is None:
+        from . import layout_config as fallback
+    out = SimpleNamespace()
+    for const, value in (("TEXT_POSITION", text_position), ("IMAGE_ORDER", image_order),
+                         ("SOURCE_TOKENS", source_tokens)):
+        setattr(out, const, value if value not in (None, "", NOT_SET) else getattr(fallback, const, None))
+    return out
+
+
 def load_layout(config=None, strict: bool = True) -> Optional[Layout]:
-    """Build the Layout from ``layout_config``.
+    """Build the Layout from ``config`` (see :func:`resolve_config`; default: layout_config.py alone).
 
     Returns None when constants are unset and ``strict`` is False. Raises
     :class:`LayoutNotEstablished` when constants are unset and ``strict`` is True.
@@ -82,11 +99,12 @@ def load_layout(config=None, strict: bool = True) -> Optional[Layout]:
     missing = unset_constants(config)
     if missing:
         if strict:
+            options = ", ".join(OPTION_NAMES[m] for m in missing)
             raise LayoutNotEstablished(
-                "MOSS-Image sequence layout has not been established. Unset constant(s) in "
-                f"moss_regional_lora/layout_config.py: {', '.join(missing)}. "
-                f"Run {DISCOVERY_TOOL} on your ComfyUI machine against your MOSS-Image checkpoint "
-                "and paste the values it prints into layout_config.py. Refusing to run, because a "
-                "misaligned mask applies the LoRA to the wrong tokens and looks like a working node.")
+                f"MOSS-Image sequence layout has not been established: set {options} in this node's advanced "
+                f"options (or {', '.join(missing)} in moss_regional_lora/layout_config.py). Get the values by "
+                f"running the \"{DISCOVERY_NODE}\" node once (or {DISCOVERY_TOOL} from a terminal). Refusing to "
+                "apply LoRAs, because a misaligned mask applies the LoRA to the wrong tokens and looks like a "
+                "working node. Boxes with only a caption work without this.")
         return None
     return Layout(config.TEXT_POSITION, config.IMAGE_ORDER, config.SOURCE_TOKENS)
