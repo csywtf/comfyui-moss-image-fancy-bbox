@@ -61,6 +61,7 @@ Node.prototype.addDOMWidget = function (name, type, element) {
 };
 Node.prototype.setSize = function (s) { this.size = s; };
 Node.prototype.setDirtyCanvas = function () {};
+Node.prototype.configure = function (info) { this.configuredWith = info.widgets_values; };   // LGraphNode's
 await ext.beforeRegisterNodeDef(Node, { name: "MossRegionalLora" });
 window.node = new Node();
 window.node.onNodeCreated();
@@ -266,6 +267,14 @@ await page.keyboard.press("Delete");
 await page.keyboard.press("Control+z");
 assert.equal(await page.locator("#raw").inputValue(), broken);
 console.log("parse-error safety ok");
+
+// a workflow saved with vae_downscale/patch_size loads with its later values in the right slots
+const migrated = await page.evaluate(() => {
+  window.node.configure({ widgets_values: [1024, 768, "{}", 16, 1, 0.15, 1.0, 20, true, "cap", "suffix", "raster", "end"] });
+  return window.node.configuredWith;
+});
+assert.deepEqual(migrated, [1024, 768, "{}", 0.15, 1.0, 20, true, "cap", "suffix", "raster", "end"]);
+console.log("old widget values migrated ok");
 
 await page.locator("#raw").fill(JSON.stringify(pasted, null, 2));
 await page.waitForFunction(() => getComputedStyle(document.querySelector(".mrl-error")).display === "none", null, { timeout: 2000 });

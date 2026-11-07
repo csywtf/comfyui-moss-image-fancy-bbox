@@ -3,7 +3,7 @@
 import pytest
 
 from moss_regional_lora.geometry import (GeometryError, canvas_to_centered, centered_to_canvas, coverage_grid,
-                                         patch_grid_size, raster_flatten)
+                                         grid_coverage, patch_grid_size, raster_flatten)
 
 
 def mass(grid):
@@ -101,3 +101,13 @@ def test_invalid_inputs():
         coverage_grid([0, 0, 10], 64, 64, 8, 2)
     with pytest.raises(GeometryError):
         patch_grid_size(100, 64, 8, 2)                    # 100 not a multiple of 16
+
+
+@pytest.mark.parametrize("box", [[-512, -512, 0, 0], [-300, -17, 211, 400], [-10, 600, 10, 700]])
+def test_grid_coverage_matches_the_patch_grid_and_scales_proportionally(box):
+    assert grid_coverage(box, 1024, 768, 48, 64) == coverage_grid(box, 1024, 768, 16, 1)
+    # the same canvas on a half-resolution grid covers the same fraction of the image
+    half = grid_coverage(box, 1024, 768, 24, 32)
+    assert abs(mass(half) / n_tokens(half) - mass(coverage_grid(box, 1024, 768, 16, 1)) / (48 * 64)) < 1e-12
+    with pytest.raises(GeometryError):
+        grid_coverage(box, 1024, 768, 0, 64)

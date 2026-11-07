@@ -14,6 +14,7 @@ import * as S from "./state.js";
 import * as C from "./curve.js";
 import { CurvePanel, drawSparkline } from "./curve_panel.js";
 import { icon } from "./icons.js";
+import { dropRemovedGridValues } from "./migrate.js";
 
 const NODE_NAME = "MossRegionalLora";
 const POLL_MS = 250;
@@ -1279,6 +1280,14 @@ app.registerExtension({
     nodeType.prototype.onExecuted = function (output) {
       onExecuted?.apply(this, arguments);
       this.__mrlEditor?.setStatus(output?.moss_regional_lora?.[0]);
+    };
+
+    // Rearrange widget values of workflows saved before vae_downscale/patch_size were removed, before
+    // ComfyUI assigns them to widgets by position.
+    const configure = nodeType.prototype.configure;
+    nodeType.prototype.configure = function (info) {
+      if (info?.widgets_values) info.widgets_values = dropRemovedGridValues(info.widgets_values);
+      return configure.apply(this, arguments);
     };
 
     const onConfigure = nodeType.prototype.onConfigure;

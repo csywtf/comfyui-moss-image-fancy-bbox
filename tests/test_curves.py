@@ -74,7 +74,7 @@ def _two_box_run(curve_left, curve_right, step, steps_in_schedule, node_steps=20
     left, right = (-32, -32, 32, 0), (-32, 0, 32, 32)
     specs = [RegionSpec(0, "L", left, "a", 1.0, curve_left), RegionSpec(1, "R", right, "b", 1.0, curve_right)]
     ctrl = RegionalLoraController(specs, [[target(PATH, d0, u0)], [target(PATH, d1, u1)]], SUFFIX,
-                                  toy.W, toy.H, toy.VAE, toy.PATCH, ramp[0], ramp[1], node_steps, True).bind(model)
+                                  toy.W, toy.H, ramp[0], ramp[1], node_steps, True, patch_size=toy.PATCH).bind(model)
     seen = {}
     lin.register_forward_hook(lambda m, a, o: seen.setdefault("base", o.detach().clone()))
     ctrl.inject()

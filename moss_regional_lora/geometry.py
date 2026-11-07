@@ -63,21 +63,27 @@ def _axis_coverage(lo: float, hi: float, n: int) -> List[float]:
     return out
 
 
-def coverage_grid(bbox: Sequence[float], width: int, height: int, vae_downscale: int, patch_size: int) -> List[List[float]]:
-    """Coverage-weighted mask on the patch grid, ``rows x cols``, values in [0, 1].
+def grid_coverage(bbox: Sequence[float], width: int, height: int, rows: int, cols: int) -> List[List[float]]:
+    """Coverage-weighted mask of a box on a ``rows x cols`` token grid spanning the canvas, values in [0, 1].
 
-    A patch fully inside the box is 1.0, fully outside 0.0, and a patch straddling an
-    edge gets the fraction of its area inside the box (FR-4). Out-of-canvas parts of a
-    box are simply not covered by any patch (clipped, not clamped).
+    A cell fully inside the box is 1.0, fully outside 0.0, and a cell straddling an edge gets the
+    fraction of its area inside the box (FR-4). Out-of-canvas parts of a box are simply not covered
+    by any cell (clipped, not clamped). Each axis maps proportionally, so the grid can come from the
+    latent being sampled without knowing the VAE's downscale factor.
     """
-    rows, cols = patch_grid_size(width, height, vae_downscale, patch_size)
+    if rows < 1 or cols < 1:
+        raise GeometryError(f"token grid must be at least 1x1, got {cols}x{rows}")
     x0, y0, x1, y1 = centered_to_canvas(bbox, width, height)
-    # pixels -> latent cells -> patch cells
-    lx0, ly0, lx1, ly1 = (v / vae_downscale for v in (x0, y0, x1, y1))
-    px0, py0, px1, py1 = (v / patch_size for v in (lx0, ly0, lx1, ly1))
-    cov_x = _axis_coverage(px0, px1, cols)
-    cov_y = _axis_coverage(py0, py1, rows)
+    cov_x = _axis_coverage(x0 * cols / width, x1 * cols / width, cols)
+    cov_y = _axis_coverage(y0 * rows / height, y1 * rows / height, rows)
     return [[cy * cx for cx in cov_x] for cy in cov_y]
+
+
+def coverage_grid(bbox: Sequence[float], width: int, height: int, vae_downscale: int, patch_size: int) -> List[List[float]]:
+    """:func:`grid_coverage` on the patch grid given by ``vae_downscale`` and ``patch_size``."""
+    rows, cols = patch_grid_size(width, height, vae_downscale, patch_size)
+    validate_bbox(bbox)
+    return grid_coverage(bbox, width, height, rows, cols)
 
 
 def raster_flatten(grid: List[List[float]]) -> List[float]:

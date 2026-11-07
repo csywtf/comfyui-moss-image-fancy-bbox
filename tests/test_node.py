@@ -41,6 +41,7 @@ class FakePatcher:
 
     def clone(self):
         n = FakePatcher(self.dm)
+        n.model = self.model                      # like ModelPatcher.clone: the BaseModel is shared
         n.injections = {k: list(v) for k, v in self.injections.items()}
         n.wrappers = {t: {k: list(v) for k, v in d.items()} for t, d in self.wrappers.items()}
         n.is_injected = self.is_injected
@@ -141,7 +142,7 @@ UNSET = dict(text_position="not set", image_order="not set", source_tokens="not 
 
 
 def apply(node, patcher, regions, strict=True, **kw):
-    args = dict(width=toy.W, height=toy.H, regions=regions, vae_downscale=toy.VAE, patch_size=toy.PATCH,
+    args = dict(width=toy.W, height=toy.H, regions=regions,
                 ramp_start=0.0, ramp_end=0.0, steps=10, strict=strict)
     args.update(kw)
     return node.MossRegionalLora().apply(patcher, **args)
@@ -330,3 +331,22 @@ def test_measured_layout_defaults_apply_without_options(fake_comfy):
     out = apply(node, patcher, regions_json((FULL, 1.0)))
     assert out["ui"]["moss_regional_lora"][0]["status"] == "active"
     assert list(out["result"][0].injections) == ["moss_regional_lora"]
+
+
+def test_grid_inputs_removed_and_read_from_the_model(fake_comfy, monkeypatch):
+    """vae_downscale/patch_size are no longer inputs: the patch size comes from the diffusion model and
+    the px-per-latent-cell from its latent format (used only to check the latent matches the canvas)."""
+    patcher, node = fake_comfy
+    req = node.MossRegionalLora.INPUT_TYPES()["required"]
+    assert "vae_downscale" not in req and "patch_size" not in req
+    set_layout(monkeypatch)
+    patcher.model.latent_format = types.SimpleNamespace(spacial_downscale_ratio=toy.VAE)
+    m = apply(node, patcher, regions_json((FULL, 1.0)))["result"][0]
+    ctrl = next(f for d in m.wrappers.values() for fs in d.values() for f in fs).__self__
+    assert (ctrl.patch_size, ctrl.latent_downscale) == (toy.PATCH, toy.VAE)
+    m.inject_model()
+    m.apply_model(latent(), context(), topts())             # the toy latent is the canvas size: runs
+    big = torch.zeros(1, toy.LATENT_C, 16, 16, dtype=torch.float64)
+    with pytest.raises(Exception, match="node's canvas is 64x64"):
+        m.apply_model(big, context(), topts())
+    m.eject_model()

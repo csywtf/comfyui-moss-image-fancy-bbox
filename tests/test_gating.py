@@ -6,9 +6,10 @@ import torch
 import toy
 from toy import (ALL_LAYOUTS, FULL, N_IMG, N_TEXT, OFF_CANVAS, TOP_LEFT_QUADRANT, ToyDiT, bit_identical,
                  context, controller, latent, make_lora, target, topts)
-from moss_regional_lora.gating import HOOK_ATTR, RegionalLoraError, ramp_factor, step_index
+from moss_regional_lora.gating import HOOK_ATTR, RegionalLoraController, RegionalLoraError, ramp_factor, step_index
 from moss_regional_lora.geometry import coverage_grid, raster_flatten
 from moss_regional_lora.layout import Layout
+from moss_regional_lora.regions import RegionSpec
 
 SUFFIX = Layout("suffix", "raster", "none")
 PREFIX = Layout("prefix", "raster", "none")
@@ -347,6 +348,26 @@ def test_canvas_latent_mismatch_raises():
     wrong = torch.zeros(1, toy.LATENT_C, 16, 16, dtype=torch.float64)
     with pytest.raises(RegionalLoraError, match="canvas"):
         ctrl.begin_call(wrong, topts(), c_crossattn=context())
+
+
+def test_grid_comes_from_the_latent_when_the_downscale_is_unknown():
+    """Without the model's px-per-cell, a same-aspect latent at another scale still gets proportional
+    masks (the token grid is read from the latent); a different aspect ratio is refused."""
+    model, _ = setup(SUFFIX, [(TOP_LEFT_QUADRANT, 1.0)])
+    ctrl = RegionalLoraController([RegionSpec(0, "r0", TOP_LEFT_QUADRANT, "l0", 1.0)],
+                                  [[target(PATH, *make_lora(dict(model.named_modules())[PATH])[:2])]],
+                                  SUFFIX, toy.W, toy.H, 0.0, 0.0, 10, True, patch_size=toy.PATCH).bind(model)
+    ctrl.inject()
+    big = torch.zeros(1, toy.LATENT_C, 16, 16, dtype=torch.float64)      # 2x the toy latent: 8x8 tokens
+    run(model, ctrl, big, context(), topts())                            # gated, no failure
+    expected = raster_flatten(coverage_grid(TOP_LEFT_QUADRANT, toy.W, toy.H, toy.VAE // 2, toy.PATCH))  # 8x8 grid
+    assert ctrl.image_masks(8, 8) == [expected] and sum(expected) == 16.0
+    wide = torch.zeros(1, toy.LATENT_C, 8, 16, dtype=torch.float64)
+    with pytest.raises(RegionalLoraError, match="aspect ratio"):
+        ctrl.begin_call(wide, topts(), c_crossattn=context())
+    odd = torch.zeros(1, toy.LATENT_C, 9, 9, dtype=torch.float64)       # 9 cells don't make 2x2 tokens
+    with pytest.raises(RegionalLoraError, match="tokens of 2x2"):
+        ctrl.begin_call(odd, topts(), c_crossattn=context())
 
 
 def test_non_strict_warns_and_stays_inert(caplog):

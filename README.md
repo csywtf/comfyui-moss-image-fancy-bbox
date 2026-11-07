@@ -62,9 +62,8 @@ Inputs:
 
 | input | meaning |
 |---|---|
-| `width`, `height` | output canvas in pixels; must match the latent being sampled (checked at run time) |
+| `width`, `height` | output canvas in pixels; must match the latent being sampled (checked at run time). The token grid itself is read from the latent, so there is no VAE-downscale or patch-size setting |
 | `regions` | the region list as JSON, edited with the canvas below it (see *Region editor*) |
-| `vae_downscale`, `patch_size` | pixels per latent cell and latent cells per token; the *MOSS-Image Layout Discovery* report gives both (ComfyUI's MOSS-Image latent format is 16 px per cell) |
 | `ramp_start`, `ramp_end` | advanced, legacy: a linear fade-in used only by boxes **without** their own strength curve (workflows saved before curves). New boxes get their own curve (see *Strength curves*) |
 | `steps` | advanced, fallback: the curves follow the sampler's own step count; this is used only if a sampler doesn't report one |
 | `strict` | on: refuse to apply LoRAs while the layout is unverified and raise on any alignment problem. Off: pass the model through untouched (with a warning) instead. Prompt-only boxes work either way |
@@ -210,14 +209,14 @@ them in the main node's advanced options.
      text_position = ...
      image_order   = ...
      source_tokens = ...
-   inputs:
+   measured for reference (the node reads these from the latent; nothing to set):
      vae_downscale = ...
      patch_size    = ...
    ```
 
 5. On **MOSS-Image Regional LoRA + Layout Prompt**, open the advanced options and set
-   `text_position`, `image_order` and `source_tokens` to those values; set `vae_downscale` and
-   `patch_size` to the reported numbers. They are saved with the workflow; no restart is needed.
+   `text_position`, `image_order` and `source_tokens` to those values. They are saved with the
+   workflow; no restart is needed.
 6. Check the preview images: in each `diff_r0_c…` image, the bright spot (where nudging one image
    token changed the model's one-step prediction) should sit inside the green square (where
    row-by-row order puts it), in the top-left corner. The report says whether it did. Both probes
