@@ -98,10 +98,10 @@ skipped, and the count is shown under the editor after a run.
 
 ## Region editor
 
-The editor under the `regions` text box has four parts:
+The editor under the `regions` text box has three panels, with a floating toolbar on the canvas:
 
 ```
-[tools] [layers] [          canvas          ] [properties]
+[layers] [ [tools]       canvas        ] [properties]
 ```
 
 The `regions` text is the source of truth: the editor only draws it and writes it back after each
@@ -109,7 +109,7 @@ edit. You can also edit or paste the JSON by hand and the editor follows. If the
 valid JSON, the editor turns red and becomes read-only until it is fixed; it never overwrites your
 text.
 
-- **Tools** (left): **Select** (V) clicks, moves and resizes boxes; clicking the background deselects.
+- **Tools** (floating at the top left of the canvas): **Select** (V) clicks, moves and resizes boxes; clicking the background deselects.
   **Box** (B) draws a new box, then switches back to Select with the new box selected.
 - **Layers**: one row per box, with visibility, colour, name, badges (`2L` = two LoRAs, `✎` = in the
   layout prompt, ⚠ = extends past the canvas), lock and ▲ / ▼. Click a row to select the box.

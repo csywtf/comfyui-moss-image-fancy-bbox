@@ -1,6 +1,6 @@
 // In-node region editor for "MOSS-Image Regional LoRA + Layout Prompt" (spec section 8).
 //
-//   [tools] [layers] [        canvas        ] [properties]
+//   [layers] [ [tools]      canvas        ] [properties]     (the toolbar floats over the canvas)
 //
 // The node's `regions` STRING widget holds the JSON and is the only source of truth (8.1c, 8.2a).
 // This editor is a view over it: it parses the text, draws it, and writes the serialised result back
@@ -35,8 +35,8 @@ const CSS = `
 .mrl-error{display:none;background:#5a1d1d;border:1px solid #c44;padding:4px 6px;border-radius:3px;white-space:pre-wrap}
 .mrl-warn{display:none;background:#4a3d12;border:1px solid #a83;padding:2px 6px;border-radius:3px}
 .mrl-main{display:flex;flex:1 1 auto;min-height:0;gap:4px}
-.mrl-tools{flex:0 0 32px;display:flex;flex-direction:column;gap:4px}
-.mrl-tools button{width:32px;height:32px;font-size:16px;padding:0;line-height:30px}
+.mrl-tools{position:absolute;left:8px;top:8px;z-index:2;display:flex;flex-direction:column;gap:3px;padding:4px;background:rgba(30,30,30,.92);border:1px solid var(--border-color,#555);border-radius:6px;box-shadow:0 2px 10px rgba(0,0,0,.45)}
+.mrl-tools button{width:30px;height:30px;font-size:15px;padding:0;line-height:28px}
 .mrl-tools button.on{background:#3a6ea5;border-color:#6af}
 .mrl-panel{display:flex;flex-direction:column;min-height:0;border:1px solid var(--border-color,#444);border-radius:3px;background:rgba(0,0,0,.15)}
 .mrl-panel-head{display:flex;align-items:center;gap:4px;padding:3px 5px;font-weight:bold;border-bottom:1px solid rgba(128,128,128,.3)}
@@ -223,7 +223,8 @@ class RegionEditor {
     ]);
 
     this.canvas = el("canvas", { tabindex: "0" });
-    this.wrap = el("div", { class: "mrl-canvas-wrap" }, [this.canvas]);
+    // the toolbar floats over the left edge of the canvas
+    this.wrap = el("div", { class: "mrl-canvas-wrap" }, [this.canvas, tools]);
 
     this.propsTitle = el("span", { class: "grow" });
     this.props = el("div", { class: "mrl-panel-body" });
@@ -243,7 +244,7 @@ class RegionEditor {
       top,
       this.errorBox,
       this.warnBox,
-      el("div", { class: "mrl-main" }, [tools, layers, this.wrap, props]),
+      el("div", { class: "mrl-main" }, [layers, this.wrap, props]),
       this.statusLine,
     ]);
 
