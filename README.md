@@ -66,7 +66,7 @@ Inputs:
 | `steps` | total sampling steps, for the ramp |
 | `strict` | on: refuse to apply LoRAs while the layout is unverified and raise on any alignment problem. Off: pass the model through untouched (with a warning) instead. Prompt-only boxes work either way |
 | `caption` | description of the whole image: the layout prompt's summary caption. With no captioned boxes, `prompt` is just this text |
-| `text_position`, `image_order`, `source_tokens` | **advanced options**: the layout values reported by the *MOSS-Image Layout Discovery* node. Left at "not set", each falls back to `moss_regional_lora/layout_config.py` (unset by default) |
+| `text_position`, `image_order`, `source_tokens` | **advanced options**: the layout values reported by the *MOSS-Image Layout Discovery* node. `text_position` defaults to `suffix`, as measured on a real MOSS-Image run; the other two default to "not set" until a run confirms them. "not set" falls back to `moss_regional_lora/layout_config.py` (unset by default) |
 
 ## Why the weights are never merged
 

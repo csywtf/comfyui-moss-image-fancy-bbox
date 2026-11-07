@@ -312,7 +312,19 @@ def test_not_set_options_fall_back_to_layout_config(fake_comfy, monkeypatch):
 def test_advanced_options_declared(fake_comfy):
     _, node = fake_comfy
     opt = node.MossRegionalLora.INPUT_TYPES()["optional"]
-    for name in ("text_position", "image_order", "source_tokens"):
+    for name, default in (("text_position", "suffix"), ("image_order", "not set"), ("source_tokens", "not set")):
         choices, spec = opt[name]
-        assert choices[0] == "not set" and spec["default"] == "not set" and spec["advanced"] is True
+        assert choices[0] == "not set" and spec["default"] == default and spec["advanced"] is True
     assert "MossLayoutDiscovery" in node.NODE_CLASS_MAPPINGS
+
+
+def test_text_position_defaults_to_measured_suffix(fake_comfy):
+    """Without the option (an API prompt) the node uses the measured default; the error then names only
+    the two values that still need a discovery run."""
+    patcher, node = fake_comfy
+    with pytest.raises(LayoutNotEstablished) as e:
+        apply(node, patcher, regions_json((FULL, 1.0)))
+    msg = str(e.value)
+    assert "image_order" in msg and "source_tokens" in msg and "text_position" not in msg
+    out = apply(node, patcher, regions_json((FULL, 1.0)), image_order="raster", source_tokens="none")
+    assert out["ui"]["moss_regional_lora"][0]["status"] == "active"

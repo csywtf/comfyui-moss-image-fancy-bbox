@@ -18,6 +18,11 @@ log = logging.getLogger("moss_regional_lora")
 
 PATCH_KEY = "moss_regional_lora"
 
+# Measured with the MOSS-Image Layout Discovery node on a real MOSS-Image run (ComfyUI 0.44-era
+# implementation: image tokens first, then the prompt). image_order and source_tokens are not yet
+# confirmed by a run, so they stay "not set".
+MEASURED_TEXT_POSITION = "suffix"
+
 DEFAULT_REGIONS = json.dumps({"version": 1, "regions": [], "groups": [],
                               "editor": {"grid_divisions": 3, "snap": False}}, indent=2)
 
@@ -101,9 +106,10 @@ class MossRegionalLora:
             # Values measured by the "MOSS-Image Layout Discovery" node. "not set" falls back to layout_config.py.
             "optional": {
                 "text_position": ([NOT_SET, *TEXT_POSITIONS], {
-                    "default": NOT_SET, "advanced": True,
+                    "default": MEASURED_TEXT_POSITION, "advanced": True,
                     "tooltip": "Where the prompt sits in the transformer sequence relative to the image tokens. "
-                               "Copy it from the MOSS-Image Layout Discovery report."}),
+                               "Defaults to 'suffix', measured by the MOSS-Image Layout Discovery node on "
+                               "ComfyUI's MOSS-Image implementation; re-run it after a ComfyUI update."}),
                 "image_order": ([NOT_SET, *IMAGE_ORDERS], {
                     "default": NOT_SET, "advanced": True,
                     "tooltip": "Order of the image tokens (raster = row by row from the top left). "
@@ -132,7 +138,9 @@ class MossRegionalLora:
         return float("nan")
 
     def apply(self, model, width, height, regions, vae_downscale, patch_size, ramp_start, ramp_end, steps,
-              strict, caption="", text_position=NOT_SET, image_order=NOT_SET, source_tokens=NOT_SET):
+              strict, caption="", text_position=None, image_order=NOT_SET, source_tokens=NOT_SET):
+        if text_position is None:            # an API prompt without the option gets the same default as the UI
+            text_position = MEASURED_TEXT_POSITION
         doc = parse_document(regions)
         for n in doc.notes:
             log.info("[MOSS Regional LoRA] %s", n)
