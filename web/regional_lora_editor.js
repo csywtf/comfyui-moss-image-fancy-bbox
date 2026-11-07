@@ -42,8 +42,9 @@ const CSS = `
 .mrl-panel-head{display:flex;align-items:center;gap:4px;padding:3px 5px;font-weight:bold;border-bottom:1px solid rgba(128,128,128,.3)}
 .mrl-panel-head .grow{flex:1}
 .mrl-panel-body{overflow:auto;flex:1 1 auto;min-height:0}
-.mrl-layers{flex:0 0 220px}
-.mrl-props{flex:0 0 300px}
+.mrl-layers{flex:0 0 250px;width:250px;min-width:0}
+.mrl-props{flex:0 0 300px;width:300px;min-width:0}
+.mrl-root button{white-space:nowrap}
 .mrl-canvas-wrap{position:relative;flex:1 1 auto;min-width:120px;min-height:160px;overflow:hidden}
 .mrl-canvas-wrap canvas{position:absolute;left:0;top:0;outline:none}
 .mrl-row,.mrl-group{display:flex;align-items:center;gap:4px;padding:2px 4px;border-bottom:1px solid rgba(128,128,128,.2);cursor:default;user-select:none}
@@ -53,7 +54,7 @@ const CSS = `
 .mrl-row.hidden-row .mrl-name{opacity:.5}
 .mrl-row.drop-before,.mrl-group.drop-before{box-shadow:inset 0 2px 0 #6af}
 .mrl-group{background:rgba(128,128,128,.15);font-weight:bold}
-.mrl-group input[type=text]{width:70px;background:transparent;color:inherit;border:1px solid transparent;font-weight:bold}
+.mrl-group input[type=text]{flex:1;min-width:40px;width:60px;background:transparent;color:inherit;border:1px solid transparent;font-weight:bold}
 .mrl-group input[type=text]:focus{border-color:#888}
 .mrl-chip{width:10px;height:10px;border-radius:2px;flex:0 0 10px}
 .mrl-name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -852,9 +853,8 @@ class RegionEditor {
       el("button", { text: g.collapsed ? "▸" : "▾", class: "mrl-mini", title: "Collapse / expand", onclick: () => this.commit(S.setGroupCollapsed(this.state, g.id, !g.collapsed)) }),
       name,
       el("span", { class: "mrl-badge", text: String(u.indices.length) }),
-      el("span", { class: "grow", style: "flex:1" }),
-      el("button", { text: "Show all", class: "mrl-mini", title: "Show every box in the group", onclick: () => this.commit(S.setGroupVisible(this.state, g.id, true)) }),
-      el("button", { text: "Hide all", class: "mrl-mini", title: "Hide every box in the group", onclick: () => this.commit(S.setGroupVisible(this.state, g.id, false)) }),
+      el("button", { text: "👁", class: "mrl-mini", title: "Show all: make every box in the group visible", onclick: () => this.commit(S.setGroupVisible(this.state, g.id, true)) }),
+      el("button", { text: "⊘", class: "mrl-mini", title: "Hide all: hide every box in the group", onclick: () => this.commit(S.setGroupVisible(this.state, g.id, false)) }),
       el("button", { text: "▲", class: "mrl-mini", title: "Move group up", onclick: () => this.commit(S.moveGroup(this.state, g.id, -1)) }),
       el("button", { text: "▼", class: "mrl-mini", title: "Move group down", onclick: () => this.commit(S.moveGroup(this.state, g.id, +1)) }),
       el("button", {
@@ -966,7 +966,6 @@ class RegionEditor {
       this.setEditor({ reference_opacity: parseFloat(op.value) });
     });
     return el("div", { class: "mrl-sec" }, [
-      el("div", { class: "mrl-sec-title", text: "Canvas" }),
       el("div", { class: "mrl-hint", text: `${W} × ${H} px (the node's width/height). Select a box to edit it.` }),
       this.field("Grid ÷", grid),
       this.field("Snap", snap),
