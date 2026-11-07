@@ -32,7 +32,8 @@ cd ComfyUI/custom_nodes
 git clone https://github.com/csywtf/comfyui-moss-image-fancy-bbox.git
 ```
 
-There are no dependencies beyond ComfyUI itself. The region editor in `web/` is registered
+There are no dependencies beyond ComfyUI itself. The editor's icons are a small bundled subset of
+[Lucide](https://lucide.dev) (ISC license, `web/LICENSE-lucide.txt`); nothing is downloaded at run time. The region editor in `web/` is registered
 automatically through the node's `WEB_DIRECTORY`; there is nothing to install in the browser.
 
 ## Where the node goes

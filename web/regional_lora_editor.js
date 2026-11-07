@@ -13,16 +13,17 @@ import * as G from "./geometry.js";
 import * as S from "./state.js";
 import * as C from "./curve.js";
 import { CurvePanel, drawSparkline } from "./curve_panel.js";
+import { icon } from "./icons.js";
 
 const NODE_NAME = "MossRegionalLora";
 const POLL_MS = 250;
 const HANDLE_PX = 7; // half-size of a resize handle, in screen px
 const MIN_CREATE_PX = 3; // drags shorter than this (image px) are clicks, not creates
 
-// Tools in the left toolbar. Add new ones here: {id, label, key, title}.
+// Tools in the floating toolbar. Add new ones here: {id, icon (a name in icons.js), key, title}.
 const TOOLS = [
-  { id: "select", label: "⬉", key: "v", title: "Select (V): click to select, drag a box to move it, drag a handle to resize. Click the background to deselect." },
-  { id: "box", label: "▭", key: "b", title: "Box (B): drag to draw a new box. Shift: square, Alt: from the centre." },
+  { id: "select", icon: "mouse-pointer-2", key: "v", title: "Select (V): click to select, drag a box to move it, drag a handle to resize. Click the background to deselect." },
+  { id: "box", icon: "square", key: "b", title: "Box (B): drag to draw a new box. Shift: square, Alt: from the centre." },
 ];
 
 const CSS = `
@@ -30,19 +31,26 @@ const CSS = `
 .mrl-top{display:flex;flex-wrap:wrap;align-items:center;gap:6px}
 .mrl-top button,.mrl-root button{background:var(--comfy-input-bg,#222);color:inherit;border:1px solid var(--border-color,#555);border-radius:3px;padding:0 5px;cursor:pointer;line-height:18px}
 .mrl-root button:disabled{opacity:.4;cursor:default}
+.mrl-root button{display:inline-flex;align-items:center;justify-content:center;gap:3px}
+.mrl-icon{display:block;flex:0 0 auto}
+.mrl-mini{min-width:18px;height:20px;padding:0 3px!important}
+.mrl-layers .mrl-mini:not(.mrl-has-text){background:transparent!important;border-color:transparent!important;padding:0 1px!important;min-width:18px}
+.mrl-layers .mrl-mini:not(.mrl-has-text):hover{background:rgba(128,128,128,.25)!important}
+.mrl-row,.mrl-group{gap:2px!important}
+.mrl-toggle-off{opacity:.45}
 .mrl-dims{font-weight:bold}
 .mrl-readout{font-family:monospace;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:1;min-width:0}
 .mrl-error{display:none;background:#5a1d1d;border:1px solid #c44;padding:4px 6px;border-radius:3px;white-space:pre-wrap}
 .mrl-warn{display:none;background:#4a3d12;border:1px solid #a83;padding:2px 6px;border-radius:3px}
 .mrl-main{display:flex;flex:1 1 auto;min-height:0;gap:4px}
 .mrl-tools{position:absolute;left:8px;top:8px;z-index:2;display:flex;flex-direction:column;gap:3px;padding:4px;background:rgba(30,30,30,.92);border:1px solid var(--border-color,#555);border-radius:6px;box-shadow:0 2px 10px rgba(0,0,0,.45)}
-.mrl-tools button{width:30px;height:30px;font-size:15px;padding:0;line-height:28px}
+.mrl-tools button{width:30px;height:30px;padding:0}
 .mrl-tools button.on{background:#3a6ea5;border-color:#6af}
 .mrl-panel{display:flex;flex-direction:column;min-height:0;border:1px solid var(--border-color,#444);border-radius:3px;background:rgba(0,0,0,.15)}
 .mrl-panel-head{display:flex;align-items:center;gap:4px;padding:3px 5px;font-weight:bold;border-bottom:1px solid rgba(128,128,128,.3)}
 .mrl-panel-head .grow{flex:1}
 .mrl-panel-body{overflow:auto;flex:1 1 auto;min-height:0}
-.mrl-layers{flex:0 0 250px;width:250px;min-width:0}
+.mrl-layers{flex:0 0 260px;width:260px;min-width:0}
 .mrl-props{flex:0 0 300px;width:300px;min-width:0}
 .mrl-root button{white-space:nowrap}
 .mrl-canvas-wrap{position:relative;flex:1 1 auto;min-width:120px;min-height:160px;overflow:hidden}
@@ -58,9 +66,9 @@ const CSS = `
 .mrl-group input[type=text]:focus{border-color:#888}
 .mrl-chip{width:10px;height:10px;border-radius:2px;flex:0 0 10px}
 .mrl-name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.mrl-badge{font-size:10px;padding:0 3px;border-radius:3px;background:rgba(128,128,128,.3)}
-.mrl-oob{color:#fb4}
-.mrl-grip{cursor:grab;opacity:.6}
+.mrl-badge{font-size:10px;padding:1px 3px;border-radius:3px;background:rgba(128,128,128,.3);display:inline-flex;align-items:center;gap:2px}
+.mrl-oob{color:#fb4;display:inline-flex;align-items:center;gap:3px}
+.mrl-grip{cursor:grab;opacity:.6;display:inline-flex}
 .mrl-mini{padding:0 3px!important;line-height:16px!important;font-size:10px}
 .mrl-sec{padding:5px 6px;border-bottom:1px solid rgba(128,128,128,.25);display:flex;flex-direction:column;gap:4px}
 .mrl-sec-title{font-weight:bold;opacity:.85;display:flex;align-items:center;gap:6px}
@@ -76,7 +84,8 @@ const CSS = `
 .mrl-lora{border:1px solid rgba(128,128,128,.3);border-radius:3px;padding:3px;display:flex;flex-direction:column;gap:3px}
 .mrl-lora.open{border-color:#6af}
 .mrl-lora-row{display:flex;align-items:center;gap:4px}
-.mrl-lora-name{flex:1;min-width:0;text-align:left;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.mrl-lora-name{flex:1;min-width:0;justify-content:space-between!important}
+.mrl-lora-label{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
 .mrl-lora-row input[type=number]{width:54px}
 .mrl-spark{cursor:pointer;flex:0 0 auto;border-radius:2px}
 .mrl-spark.open{outline:1px solid #6af}
@@ -108,14 +117,18 @@ function injectCss() {
   s.textContent = CSS;
 }
 
+// attrs.icon: a Lucide icon name, placed before attrs.text (an icon-only control needs a title)
 function el(tag, attrs = {}, children = []) {
   const e = document.createElement(tag);
   for (const [k, v] of Object.entries(attrs)) {
     if (k === "class") e.className = v;
-    else if (k === "text") e.textContent = v;
+    else if (k === "text" || k === "icon") continue;
     else if (k.startsWith("on")) e.addEventListener(k.slice(2), v);
     else if (v !== undefined && v !== null) e.setAttribute(k, v);
   }
+  if (attrs.icon) e.appendChild(icon(attrs.icon, attrs.iconSize || 14));
+  if (attrs.text !== undefined && attrs.text !== null) e.appendChild(document.createTextNode(attrs.text));
+  if (attrs.icon && attrs.text) e.classList.add("mrl-has-text");
   for (const c of [].concat(children)) if (c) e.appendChild(typeof c === "string" ? document.createTextNode(c) : c);
   return e;
 }
@@ -199,8 +212,8 @@ class RegionEditor {
   buildDom() {
     injectCss();
     this.dims = el("span", { class: "mrl-dims" });
-    this.undoBtn = el("button", { text: "Undo", title: "Ctrl/Cmd+Z", onclick: () => this.undo() });
-    this.redoBtn = el("button", { text: "Redo", title: "Ctrl/Cmd+Shift+Z", onclick: () => this.redo() });
+    this.undoBtn = el("button", { icon: "undo-2", text: "Undo", title: "Undo (Ctrl/Cmd+Z)", onclick: () => this.undo() });
+    this.redoBtn = el("button", { icon: "redo-2", text: "Redo", title: "Redo (Ctrl/Cmd+Shift+Z)", onclick: () => this.redo() });
     this.readout = el("div", { class: "mrl-readout" });
     const top = el("div", { class: "mrl-top" }, [this.dims, this.undoBtn, this.redoBtn, this.readout]);
     this.errorBox = el("div", { class: "mrl-error" });
@@ -210,14 +223,14 @@ class RegionEditor {
     const tools = el(
       "div",
       { class: "mrl-tools" },
-      TOOLS.map((t) => (this.toolButtons[t.id] = el("button", { text: t.label, title: t.title, onclick: () => this.setTool(t.id) }))),
+      TOOLS.map((t) => (this.toolButtons[t.id] = el("button", { icon: t.icon, iconSize: 16, title: t.title, onclick: () => this.setTool(t.id) }))),
     );
 
     this.list = el("div", { class: "mrl-panel-body" });
     const layers = el("div", { class: "mrl-panel mrl-layers" }, [
       el("div", { class: "mrl-panel-head" }, [
         el("span", { class: "grow", text: "Layers" }),
-        el("button", { text: "+ Group", class: "mrl-mini", title: "New group (puts the selected boxes in it)", onclick: () => this.addGroup() }),
+        el("button", { icon: "folder-plus", text: "Group", class: "mrl-mini", title: "New group (puts the selected boxes in it)", onclick: () => this.addGroup() }),
       ]),
       this.list,
     ]);
@@ -761,7 +774,7 @@ class RegionEditor {
       if (vis) {
         const n = S.lorasOf(r).filter((e) => e.lora).length;
         const kind = [n ? `${n} LoRA${n > 1 ? "s" : ""}` : "", S.hasPrompt(r) ? r.label || "object" : ""].filter(Boolean).join(" + ");
-        const label = `${r.name || r.id}${kind ? ` · ${kind}` : ""}${r.locked ? " 🔒" : ""}`;
+        const label = `${r.name || r.id}${kind ? ` · ${kind}` : ""}${r.locked ? " · locked" : ""}`;
         ctx.font = `${12 * px}px sans-serif`;
         const tw = ctx.measureText(label).width;
         ctx.fillStyle = hexToRgba(col, 0.85);
@@ -844,22 +857,22 @@ class RegionEditor {
     const g = u.group;
     const name = el("input", { type: "text", value: g.name, title: "Rename group" });
     name.addEventListener("change", () => this.commit(S.renameGroup(this.state, g.id, name.value)));
-    const grip = el("span", { class: "mrl-grip", text: "⠿", draggable: ro ? "false" : "true", title: "Drag to reorder the group" });
+    const grip = el("span", { class: "mrl-grip", icon: "grip-vertical", draggable: ro ? "false" : "true", title: "Drag to reorder the group" });
     grip.addEventListener("dragstart", (e) => {
       this.dragItem = { type: "group", id: g.id };
       e.dataTransfer?.setData("text/plain", g.id);
     });
     const row = el("div", { class: "mrl-group" }, [
       grip,
-      el("button", { text: g.collapsed ? "▸" : "▾", class: "mrl-mini", title: "Collapse / expand", onclick: () => this.commit(S.setGroupCollapsed(this.state, g.id, !g.collapsed)) }),
+      el("button", { icon: g.collapsed ? "chevron-right" : "chevron-down", class: "mrl-mini", title: "Collapse / expand", onclick: () => this.commit(S.setGroupCollapsed(this.state, g.id, !g.collapsed)) }),
       name,
       el("span", { class: "mrl-badge", text: String(u.indices.length) }),
-      el("button", { text: "👁", class: "mrl-mini", title: "Show all: make every box in the group visible", onclick: () => this.commit(S.setGroupVisible(this.state, g.id, true)) }),
-      el("button", { text: "⊘", class: "mrl-mini", title: "Hide all: hide every box in the group", onclick: () => this.commit(S.setGroupVisible(this.state, g.id, false)) }),
-      el("button", { text: "▲", class: "mrl-mini", title: "Move group up", onclick: () => this.commit(S.moveGroup(this.state, g.id, -1)) }),
-      el("button", { text: "▼", class: "mrl-mini", title: "Move group down", onclick: () => this.commit(S.moveGroup(this.state, g.id, +1)) }),
+      el("button", { icon: "eye", class: "mrl-mini", title: "Show all: make every box in the group visible", onclick: () => this.commit(S.setGroupVisible(this.state, g.id, true)) }),
+      el("button", { icon: "eye-off", class: "mrl-mini", title: "Hide all: hide every box in the group", onclick: () => this.commit(S.setGroupVisible(this.state, g.id, false)) }),
+      el("button", { icon: "chevron-up", class: "mrl-mini", title: "Move group up", onclick: () => this.commit(S.moveGroup(this.state, g.id, -1)) }),
+      el("button", { icon: "chevron-down", class: "mrl-mini", title: "Move group down", onclick: () => this.commit(S.moveGroup(this.state, g.id, +1)) }),
       el("button", {
-        text: "✕",
+        icon: "trash-2",
         class: "mrl-mini",
         title: "Delete all: the group and every box in it",
         onclick: () => {
@@ -878,11 +891,17 @@ class RegionEditor {
     const r = s.regions[i];
     const id = r.id;
     const oob = G.outOfBounds(G.centeredToCanvas(r.bbox, W, H), W, H);
-    const vis = el("input", { type: "checkbox", title: "Visible (hidden boxes are not emitted)" });
-    vis.checked = r.visible !== false;
-    vis.addEventListener("change", () => this.commit(S.updateRegion(this.state, id, { visible: vis.checked })));
-    vis.addEventListener("click", (e) => e.stopPropagation());
-    const grip = el("span", { class: "mrl-grip", text: "⠿", draggable: ro ? "false" : "true", title: "Drag to reorder" });
+    const shown = r.visible !== false;
+    const vis = el("button", {
+      icon: shown ? "eye" : "eye-off",
+      class: `mrl-mini mrl-vis${shown ? "" : " mrl-toggle-off"}`,
+      title: shown ? "Visible: click to hide (hidden boxes are not emitted)" : "Hidden: click to show",
+    });
+    vis.addEventListener("click", (e) => {
+      e.stopPropagation();
+      this.commit(S.updateRegion(this.state, id, { visible: !shown }));
+    });
+    const grip = el("span", { class: "mrl-grip", icon: "grip-vertical", draggable: ro ? "false" : "true", title: "Drag to reorder" });
     grip.addEventListener("dragstart", (e) => {
       this.dragItem = { type: "region", id };
       e.dataTransfer?.setData("text/plain", id);
@@ -897,12 +916,12 @@ class RegionEditor {
       vis,
       el("span", { class: "mrl-chip", style: `background:${S.regionColor(s, i)}` }),
       el("span", { class: "mrl-name", text: r.name || r.id, title: r.name || r.id }),
-      oob ? el("span", { class: "mrl-oob", text: "⚠", title: "Extends beyond the canvas: those parts cover no tokens" }) : null,
-      nLoras ? el("span", { class: "mrl-badge", text: `${nLoras}L`, title: `${nLoras} LoRA(s)` }) : null,
-      S.hasPrompt(r) ? el("span", { class: "mrl-badge", text: "✎", title: "In the layout prompt" }) : null,
-      el("button", { text: r.locked ? "🔒" : "🔓", class: "mrl-mini", title: "Lock (no moving or resizing on the canvas)", onclick: stop(() => this.commit(S.updateRegion(this.state, id, { locked: !r.locked }))) }),
-      el("button", { text: "▲", class: "mrl-mini", title: "Move up (drawn earlier)", onclick: stop(() => this.commit(S.moveRegion(this.state, id, -1))) }),
-      el("button", { text: "▼", class: "mrl-mini", title: "Move down (drawn later)", onclick: stop(() => this.commit(S.moveRegion(this.state, id, +1))) }),
+      oob ? el("span", { class: "mrl-oob", icon: "triangle-alert", title: "Extends beyond the canvas: those parts cover no tokens" }) : null,
+      nLoras ? el("span", { class: "mrl-badge", icon: "layers", iconSize: 11, text: String(nLoras), title: `${nLoras} LoRA(s)` }) : null,
+      S.hasPrompt(r) ? el("span", { class: "mrl-badge", icon: "type", iconSize: 11, title: "In the layout prompt" }) : null,
+      el("button", { icon: r.locked ? "lock" : "lock-open", class: `mrl-mini${r.locked ? "" : " mrl-toggle-off"}`, title: r.locked ? "Locked: click to unlock" : "Lock (no moving or resizing on the canvas)", onclick: stop(() => this.commit(S.updateRegion(this.state, id, { locked: !r.locked }))) }),
+      el("button", { icon: "chevron-up", class: "mrl-mini", title: "Move up (drawn earlier)", onclick: stop(() => this.commit(S.moveRegion(this.state, id, -1))) }),
+      el("button", { icon: "chevron-down", class: "mrl-mini", title: "Move down (drawn later)", onclick: stop(() => this.commit(S.moveRegion(this.state, id, +1))) }),
     ]);
     row.addEventListener("click", (e) => this.select(id, e.shiftKey || e.ctrlKey || e.metaKey));
     this.dropTarget(row, id, inGroup ? r.group : null);
@@ -982,8 +1001,9 @@ class RegionEditor {
     return el("div", { class: "mrl-sec" }, [
       el("div", { class: "mrl-hint", text: "Edit one box at a time; with several selected you can group, move with the arrow keys, or delete them." }),
       el("div", { class: "mrl-field" }, [
-        el("button", { text: "Group them", onclick: () => this.addGroup() }),
+        el("button", { icon: "folder-plus", text: "Group them", onclick: () => this.addGroup() }),
         el("button", {
+          icon: "trash-2",
           text: "Delete",
           onclick: () => {
             const del = ids.filter((id) => !this.region(id)?.locked);
@@ -1030,6 +1050,7 @@ class RegionEditor {
       el("div", { class: "mrl-sec-title" }, [
         el("span", { class: "grow", text: "Box" }),
         el("button", {
+          icon: "trash-2",
           text: "Delete box",
           class: "mrl-mini",
           onclick: () => {
@@ -1048,7 +1069,7 @@ class RegionEditor {
         { class: "mrl-bbox-grid" },
         labels.map((l, k) => el("label", {}, [l, inputs[k]])),
       ),
-      oob ? el("div", { class: "mrl-oob", text: "⚠ Extends beyond the canvas: those parts cover no tokens." }) : null,
+      oob ? el("div", { class: "mrl-oob", icon: "triangle-alert", text: "Extends beyond the canvas: those parts cover no tokens." }) : null,
       this.field("Group", group),
     ]);
   }
@@ -1074,9 +1095,9 @@ class RegionEditor {
     const swatches = palette.map((c, k) => {
       const sw = el("input", { type: "color", value: /^#[0-9a-f]{6}$/i.test(c) ? c : "#000000", title: `Palette colour ${k + 1}` });
       sw.addEventListener("change", () => upd({ palette: palette.map((x, j) => (j === k ? sw.value.toUpperCase() : x)) }));
-      return el("span", {}, [sw, el("button", { text: "×", class: "mrl-mini", title: "Remove colour", onclick: () => upd({ palette: palette.filter((_, j) => j !== k) }) })]);
+      return el("span", {}, [sw, el("button", { icon: "x", class: "mrl-mini", title: "Remove colour", onclick: () => upd({ palette: palette.filter((_, j) => j !== k) }) })]);
     });
-    if (palette.length < S.MAX_PALETTE) swatches.push(el("button", { text: "+ colour", class: "mrl-mini", onclick: () => upd({ palette: [...palette, "#808080"] }) }));
+    if (palette.length < S.MAX_PALETTE) swatches.push(el("button", { icon: "plus", text: "colour", class: "mrl-mini", title: "Add a palette colour", onclick: () => upd({ palette: [...palette, "#808080"] }) }));
     parts.push(el("div", { class: "mrl-field" }, [el("span", { text: "Palette" }), ...swatches]));
     return el("div", { class: "mrl-sec" }, parts);
   }
@@ -1113,7 +1134,8 @@ class RegionEditor {
       el("div", { class: "mrl-sec-title" }, [
         el("span", { class: "grow", text: "LoRAs" }),
         el("button", {
-          text: "+ Add LoRA",
+          icon: "plus",
+          text: "Add LoRA",
           class: "mrl-mini",
           onclick: () => {
             this.expanded = null;
@@ -1129,7 +1151,10 @@ class RegionEditor {
   loraEntry(r, e, k) {
     const open = this.expanded && this.expanded.id === r.id && this.expanded.index === k;
     const i = this.state.regions.indexOf(r);
-    const nameBtn = el("button", { class: "mrl-lora-name", text: `${loraDisplayName(e.lora)} ▾`, title: e.lora || "Choose a LoRA" });
+    const nameBtn = el("button", { class: "mrl-lora-name", title: e.lora || "Choose a LoRA" }, [
+      el("span", { class: "mrl-lora-label", text: loraDisplayName(e.lora) }),
+      icon("chevron-down", 13),
+    ]);
     nameBtn.addEventListener("click", (ev) => {
       ev.stopPropagation();
       this.openPicker(nameBtn, e.lora, (path) => {
@@ -1154,8 +1179,8 @@ class RegionEditor {
       this.renderProps();
     });
     const remove = el("button", {
-      text: "✕",
-      class: "mrl-mini",
+      icon: "x",
+      class: "mrl-mini mrl-lora-remove",
       title: "Remove this LoRA from the box",
       onclick: () => {
         this.expanded = null;

@@ -190,7 +190,8 @@ console.log("lock ok");
 // 8. selecting a layer row fills the properties panel; the LoRA shows its file name only
 await page.locator(".mrl-layers .mrl-row", { hasText: "Alice" }).click();
 assert.match(await propsTitle(), /Alice/);
-assert.equal((await page.locator(".mrl-lora-name").first().innerText()).replace(" ▾", ""), "weight_slider_moss_v5_100");
+assert.equal((await page.locator(".mrl-lora-name").first().innerText()).trim(), "weight_slider_moss_v5_100");
+assert.ok((await page.locator(".mrl-root svg.mrl-icon").count()) > 10); // Lucide icons rendered
 // editing a box field converts nothing else; editing the LoRA list converts the version-1 fields
 await page.locator(".mrl-props textarea").fill("a tall woman");
 await page.locator(".mrl-props textarea").press("Tab");
@@ -204,7 +205,7 @@ assert.deepEqual(s.regions[0].loras, [{ lora: pasted.regions[0].lora, weight: 1.
 console.log("properties ok");
 
 // 9. add a second LoRA and pick its file from the path dropdown
-await page.locator(".mrl-props button", { hasText: "+ Add LoRA" }).click();
+await page.locator(".mrl-props button", { hasText: "Add LoRA" }).click();
 await page.locator(".mrl-lora-name").nth(1).click();
 await page.locator(".mrl-picker input").fill("bob");
 await page.locator(".mrl-picker-item", { hasText: "bob.safetensors" }).click();
@@ -245,9 +246,12 @@ if (process.argv[3]) await page.screenshot({ path: process.argv[3] });
 console.log("curve editing ok");
 
 // 11. remove a LoRA; reorder boxes with the layer buttons
-await page.locator(".mrl-lora-row button", { hasText: "✕" }).nth(0).click();
+await page.locator(".mrl-lora-row .mrl-lora-remove").nth(0).click();
 assert.deepEqual((await json()).regions[0].loras.map((e) => e.lora), ["bob.safetensors"]);
-await page.locator(".mrl-layers .mrl-row", { hasText: "Bob" }).locator("button", { hasText: "▲" }).click();
+await page.locator(".mrl-layers .mrl-row", { hasText: "Bob" }).locator('button[title^="Move up"]').click();
+// the eye toggle hides a box (and it is then left out of the output)
+await page.locator(".mrl-layers .mrl-row", { hasText: "Alice" }).locator(".mrl-vis").click();
+assert.equal((await json()).regions[1].visible, false);
 assert.deepEqual((await json()).regions.map((r) => r.name), ["Bob", "Alice"]);
 console.log("reorder ok");
 
