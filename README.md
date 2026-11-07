@@ -66,7 +66,7 @@ Inputs:
 | `steps` | total sampling steps, for the ramp |
 | `strict` | on: refuse to apply LoRAs while the layout is unverified and raise on any alignment problem. Off: pass the model through untouched (with a warning) instead. Prompt-only boxes work either way |
 | `caption` | description of the whole image: the layout prompt's summary caption. With no captioned boxes, `prompt` is just this text |
-| `text_position`, `image_order`, `source_tokens` | **advanced options**: the layout values reported by the *MOSS-Image Layout Discovery* node. Left at "not set", each falls back to `moss_regional_lora/layout_config.py` (unset by default) |
+| `text_position`, `image_order`, `source_tokens` | **advanced options**: the layout values reported by the *MOSS-Image Layout Discovery* node. `text_position` defaults to `suffix`, as measured on a real MOSS-Image run; the other two default to "not set" until a run confirms them. "not set" falls back to `moss_regional_lora/layout_config.py` (unset by default) |
 
 ## Why the weights are never merged
 
@@ -153,8 +153,8 @@ MOSS-Image checkpoint. Re-run it after a ComfyUI update.
    (straight from the loader, without other patches), CLIP and VAE.
 2. Connect any image (for example a *Load Image* node) to `edit_image`, so the report also covers
    edit workflows.
-3. Queue it on its own. It runs a few one-step passes plus three full generations at the canvas
-   size, so it takes a few minutes.
+3. Queue it on its own. It runs about ten single-step passes at the canvas size (no full
+   generations), so it takes roughly as long as one or two normal generations.
 4. Read the report on the node. It ends with the values to set:
 
    ```
@@ -171,9 +171,10 @@ MOSS-Image checkpoint. Re-run it after a ComfyUI update.
 5. On **MOSS-Image Regional LoRA + Layout Prompt**, open the advanced options and set
    `text_position`, `image_order` and `source_tokens` to those values; set `vae_downscale` and
    `patch_size` to the reported numbers. They are saved with the workflow; no restart is needed.
-6. Check the preview images: in each `diff_r0_c…` image, the bright spot (where perturbing one image
-   token changed the picture) should sit inside the green square (where row-by-row order puts it).
-   The report says whether it did. Both probes must confirm.
+6. Check the preview images: in each `diff_r0_c…` image, the bright spot (where nudging one image
+   token changed the model's one-step prediction) should sit inside the green square (where
+   row-by-row order puts it), in the top-left corner. The report says whether it did. Both probes
+   must confirm. (`prediction` and `probe_r0_c…` are blurry one-step predictions; that's expected.)
 7. If any value says `NOT ESTABLISHED`, or a `problems` section appears, don't guess: open an issue
    with the whole report and the images. If the change in the probe images isn't clear, raise the
    advanced `probe_strength`.

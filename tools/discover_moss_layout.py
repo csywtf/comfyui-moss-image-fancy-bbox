@@ -97,10 +97,6 @@ def main(argv=None):
     ap.add_argument("--patch-size", type=int, help="tokens per latent cell along each axis (default: infer)")
     ap.add_argument("--text-position", choices=["prefix", "suffix"], help="for --mode probe/edit when not running order")
     ap.add_argument("--prompt", default="a quiet mountain lake at dawn, pine trees on the shore, soft mist")
-    ap.add_argument("--steps", type=int, default=20)
-    ap.add_argument("--cfg", type=float, default=4.0)
-    ap.add_argument("--sampler", default="euler")
-    ap.add_argument("--scheduler", default="simple")
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--probe-row", type=int, default=0)
     ap.add_argument("--probe-col", type=int, default=0)
@@ -114,8 +110,7 @@ def main(argv=None):
 
     import torch
     settings = Settings(width=args.width, height=args.height, patch_size=args.patch_size,
-                        text_position=args.text_position, prompt=args.prompt, steps=args.steps, cfg=args.cfg,
-                        sampler=args.sampler, scheduler=args.scheduler, seed=args.seed,
+                        text_position=args.text_position, prompt=args.prompt, seed=args.seed,
                         probe_strength=args.probe_strength, edit_methods=parse_edit_methods(",".join(args.edit_method or [])),
                         atol=args.atol, blocks=args.blocks)
     try:

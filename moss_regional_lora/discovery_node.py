@@ -14,18 +14,9 @@ from .discovery import Discovery, DiscoveryError, Settings, parse_edit_methods
 log = logging.getLogger("moss_regional_lora")
 
 
-def _samplers():
-    try:
-        import comfy.samplers
-        return comfy.samplers.KSampler.SAMPLERS, comfy.samplers.KSampler.SCHEDULERS
-    except Exception:  # outside ComfyUI (tests)
-        return ["euler"], ["simple"]
-
-
 class MossLayoutDiscovery:
     @classmethod
     def INPUT_TYPES(cls):
-        samplers, schedulers = _samplers()
         return {
             "required": {
                 "model": ("MODEL", {"tooltip": "The MOSS-Image model, straight from its loader (no other patches)."}),
@@ -36,11 +27,7 @@ class MossLayoutDiscovery:
                 "seed": ("INT", {"default": 42, "min": 0, "max": 0xffffffffffffffff}),
                 "prompt": ("STRING", {"multiline": True,
                                       "default": "a quiet mountain lake at dawn, pine trees on the shore, soft mist",
-                                      "tooltip": "Image generated for the single-patch probes. A detailed scene works best."}),
-                "steps": ("INT", {"default": 20, "min": 1, "max": 200}),
-                "cfg": ("FLOAT", {"default": 4.0, "min": 0.0, "max": 30.0, "step": 0.1}),
-                "sampler_name": (samplers, {"default": "euler"}),
-                "scheduler": (schedulers, {"default": "simple"}),
+                                      "tooltip": "Prompt for the single-patch probes and the edit pass."}),
             },
             "optional": {
                 "edit_image": ("IMAGE", {"tooltip": "Any image. Connect it to also measure where an edit pipeline's "
@@ -62,7 +49,8 @@ class MossLayoutDiscovery:
     RETURN_TYPES = ("STRING", "IMAGE")
     RETURN_NAMES = ("report", "images")
     OUTPUT_TOOLTIPS = ("The discovery report, ending with the values to set.",
-                       "baseline, probe_r0_c0, diff_r0_c0, probe_r0_c1, diff_r0_c1.")
+                       "prediction, probe_r0_c0, diff_r0_c0, probe_r0_c1, diff_r0_c1 (one-step predictions and "
+                       "where nudging one image token changed them).")
     OUTPUT_NODE = True
     FUNCTION = "run"
     CATEGORY = "model_patches/moss_image"
@@ -70,8 +58,7 @@ class MossLayoutDiscovery:
                    "set in the advanced options of MOSS-Image Regional LoRA + Layout Prompt. Run it once; it "
                    "changes nothing.")
 
-    def run(self, model, clip, vae, width, height, seed, prompt, steps, cfg, sampler_name, scheduler,
-            edit_image=None, edit_methods="default, index_timestep_zero", probe_strength=8.0, patch_size=0, blocks=""):
+    def run(self, model, clip, vae, width, height, seed, prompt, edit_image=None, edit_methods="default, index_timestep_zero", probe_strength=8.0, patch_size=0, blocks=""):
         import torch
         lines = []
 
@@ -79,8 +66,7 @@ class MossLayoutDiscovery:
             lines.append(line)
             log.info("[MOSS Layout Discovery] %s", line)
 
-        settings = Settings(width=width, height=height, patch_size=patch_size or None, prompt=prompt, steps=steps,
-                            cfg=cfg, sampler=sampler_name, scheduler=scheduler, seed=seed,
+        settings = Settings(width=width, height=height, patch_size=patch_size or None, prompt=prompt, seed=seed,
                             probe_strength=probe_strength, edit_methods=parse_edit_methods(edit_methods),
                             blocks=blocks.strip() or None)
         images = []
