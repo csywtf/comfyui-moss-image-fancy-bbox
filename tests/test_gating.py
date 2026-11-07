@@ -367,3 +367,30 @@ def test_unresolvable_targets_are_skipped_and_counted():
     ctrl = controller(model, [(FULL, 1.0)], [[good, missing, not_linear, bad_shape]], SUFFIX)
     assert ctrl.applied_count == 1
     assert len(ctrl.skipped) == 3
+
+
+def test_linear_like_module_that_is_not_nn_linear():
+    """ComfyUI's quantised Linear subclasses nn.Module only; it must still be hooked."""
+
+    class QuantLinear(torch.nn.Module):
+        def __init__(self, inner):
+            super().__init__()
+            self.in_features, self.out_features = inner.in_features, inner.out_features
+            self.inner = inner
+
+        def forward(self, x):
+            return self.inner(x)
+
+    torch.manual_seed(0)
+    model = ToyDiT(SUFFIX).double()
+    model.blocks[0].qkv = QuantLinear(model.blocks[0].qkv)
+    down, up, _ = make_lora(model.blocks[0].qkv.inner)
+    ctrl = controller(model, [(FULL, 1.0)], [[target(PATH, down, up)]], SUFFIX)
+    assert ctrl.applied_count == 1 and not ctrl.skipped
+    cap = Capture(model.blocks[0].qkv)
+    ctrl.inject()
+    cap.after_inject()
+    run(model, ctrl, latent(), context(), topts())
+    img = seq_mask(SUFFIX, FULL) > 0
+    assert not torch.equal(cap.final[:, img], cap.base[:, img])
+    assert bit_identical(cap.final[:, ~img], cap.base[:, ~img])

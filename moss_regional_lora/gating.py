@@ -120,7 +120,7 @@ class _ModuleGate:
         self._controller = weakref.ref(controller)
         self.path = path
         self.module_ref = weakref.ref(module)
-        self.out_features = module.weight.shape[0]
+        self.out_features = linear_features(module)[1]
         self.adapters: List[_Adapter] = []
         self.handle = None
         self.saved_force_forward = None
@@ -175,9 +175,22 @@ class _ModuleGate:
             delattr(m, HOOK_ATTR)
 
 
+def linear_features(m: torch.nn.Module) -> Optional[Tuple[int, int]]:
+    """(in_features, out_features) if ``m`` is a linear layer, else None.
+
+    ComfyUI's quantised ``MixedPrecisionOps.Linear`` is a plain ``nn.Module`` (not an ``nn.Linear``
+    subclass) whose weight may be packed, so linearity and shape come from the ``in_features`` /
+    ``out_features`` attributes every ComfyUI linear op carries, not from ``weight.shape``.
+    """
+    fi, fo = getattr(m, "in_features", None), getattr(m, "out_features", None)
+    if isinstance(m, torch.nn.Linear) or (isinstance(fi, int) and isinstance(fo, int)):
+        return int(fi), int(fo)
+    return None
+
+
 def iter_linear_modules(root: torch.nn.Module) -> Iterable[Tuple[str, torch.nn.Module]]:
     for name, m in root.named_modules():
-        if isinstance(m, torch.nn.Linear):
+        if linear_features(m) is not None:
             yield name, m
 
 
@@ -220,10 +233,11 @@ class RegionalLoraController:
                 if m is None:
                     self.skipped.append((r.index, t.source_prefix, f"no module '{t.module_path}' in the diffusion model"))
                     continue
-                if not isinstance(m, torch.nn.Linear):
+                feats = linear_features(m)
+                if feats is None:
                     self.skipped.append((r.index, t.source_prefix, f"'{t.module_path}' is {type(m).__name__}, not a linear module"))
                     continue
-                in_f, out_f = m.weight.shape[1], m.weight.shape[0]
+                in_f, out_f = feats
                 size = t.out_size if t.out_size is not None else out_f
                 if t.down.shape[1] != in_f or t.up.shape[0] != size or t.out_offset + size > out_f:
                     self.skipped.append((r.index, t.source_prefix, f"shape mismatch on '{t.module_path}': module {out_f}x{in_f}, "
