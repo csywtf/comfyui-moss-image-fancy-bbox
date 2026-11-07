@@ -28,6 +28,11 @@ const TOOLS = [
 
 const CSS = `
 .mrl-root{display:flex;flex-direction:column;gap:4px;width:100%;height:100%;box-sizing:border-box;font:12px sans-serif;color:var(--input-text,#ddd);outline:none}
+.mrl-root{color-scheme:dark;accent-color:#3a6ea5}
+.mrl-root input[type=text],.mrl-root input[type=number],.mrl-root select,.mrl-root textarea{background:var(--comfy-input-bg,#222);color:var(--input-text,#ddd);border:1px solid var(--border-color,#555);border-radius:3px;padding:2px 5px;font:12px sans-serif;box-sizing:border-box;outline:none}
+.mrl-root input[type=text]:focus,.mrl-root input[type=number]:focus,.mrl-root select:focus,.mrl-root textarea:focus{border-color:#6af}
+.mrl-root input::placeholder,.mrl-root textarea::placeholder{color:var(--descrip-text,#888)}
+.mrl-root input[type=color]{background:transparent;border:1px solid var(--border-color,#555);border-radius:3px;padding:1px;cursor:pointer}
 .mrl-top{display:flex;flex-wrap:wrap;align-items:center;gap:6px}
 .mrl-top button,.mrl-root button{background:var(--comfy-input-bg,#222);color:inherit;border:1px solid var(--border-color,#555);border-radius:3px;padding:0 5px;cursor:pointer;line-height:18px}
 .mrl-root button:disabled{opacity:.4;cursor:default}
@@ -104,7 +109,7 @@ const CSS = `
 .mrl-curve-wrap{position:relative;height:120px}
 .mrl-curve-wrap canvas{position:absolute;left:0;top:0;outline:none}
 .mrl-status{opacity:.85}
-.mrl-props input[type=color]{width:24px;height:18px;padding:0;border:none;background:none}
+.mrl-props input[type=color]{width:28px;height:20px}
 `;
 
 function injectCss() {
