@@ -334,6 +334,8 @@ export class CurvePanel {
   }
 
   draw() {
+    // detached (or not laid out yet): keep the last size; the next render or resize redraws it
+    if (!this.wrap.isConnected || !this.wrap.clientWidth || !this.wrap.clientHeight) return;
     const b = this.box();
     const dpr = window.devicePixelRatio || 1;
     const c = this.canvas;

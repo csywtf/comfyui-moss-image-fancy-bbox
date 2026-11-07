@@ -935,6 +935,8 @@ class RegionEditor {
       body = [this.canvasSection()];
     }
     this.props.replaceChildren(...body);
+    // only now is the curve panel (if a LoRA's curve is open) attached and measurable
+    if (this.curvePanel.root.isConnected) this.curvePanel.render();
     if (ro) for (const x of this.props.querySelectorAll("input,button,select,textarea")) x.disabled = true;
   }
 
@@ -1161,11 +1163,7 @@ class RegionEditor {
       },
     });
     const box = el("div", { class: `mrl-lora${open ? " open" : ""}` }, [el("div", { class: "mrl-lora-row" }, [nameBtn, weight, spark, remove])]);
-    if (open) {
-      box.appendChild(this.curvePanel.root);
-      this.curvePanel.render();
-      requestAnimationFrame(() => this.curvePanel.draw());
-    }
+    if (open) box.appendChild(this.curvePanel.root); // rendered by renderProps once it is in the page
     return box;
   }
 
