@@ -1,0 +1,88 @@
+{
+  "version": 1,
+  "regions": [
+    {
+      "id": "r-alice",
+      "name": "Alice",
+      "bbox": [
+        -400,
+        -480,
+        380,
+        -40
+      ],
+      "lora": "characters/alice_v2.safetensors",
+      "weight": 0.85,
+      "visible": true,
+      "locked": false,
+      "color": "#e6194b",
+      "group": "g-chars",
+      "notes": "left character",
+      "x_future": {
+        "trigger": "alice",
+        "tags": [
+          "a",
+          "b"
+        ]
+      }
+    },
+    {
+      "id": "r-bob",
+      "name": "Bob",
+      "bbox": [
+        -380,
+        40,
+        400,
+        470
+      ],
+      "lora": "characters/bob.safetensors",
+      "weight": 1,
+      "visible": true,
+      "locked": true,
+      "color": "#4363d8",
+      "group": "g-chars"
+    },
+    {
+      "id": "r-sky",
+      "name": "Sky",
+      "bbox": [
+        -512,
+        -600,
+        -200,
+        600
+      ],
+      "lora": "styles/sky.safetensors",
+      "weight": -0.5,
+      "visible": false,
+      "locked": false,
+      "color": "#42d4f4",
+      "group": null,
+      "x_extra_number": 3.25
+    }
+  ],
+  "groups": [
+    {
+      "id": "g-chars",
+      "name": "Characters",
+      "collapsed": true,
+      "x_group_meta": {
+        "owner": "me"
+      }
+    }
+  ],
+  "editor": {
+    "grid_divisions": 4,
+    "snap": true,
+    "reference_image": "layout/sketch.png",
+    "reference_opacity": 0.35,
+    "x_zoom": 1.5
+  },
+  "x_top_level_unknown": {
+    "anything": [
+      1,
+      2,
+      {
+        "deep": true
+      }
+    ]
+  }
+}
