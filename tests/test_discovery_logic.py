@@ -3,23 +3,14 @@
 These do not establish anything about MOSS-Image. They check that, *if* the model builds its
 sequence in a given way, the tool's comparisons reach the right conclusion for every layout."""
 
-import importlib.util
-import os
-import sys
-
 import pytest
 import torch
 import torch.nn as nn
 
 import toy
 from toy import ToyDiT
+from moss_regional_lora import discovery as disc
 from moss_regional_lora.layout import Layout
-
-_spec = importlib.util.spec_from_file_location(
-    "discover_moss_layout", os.path.join(os.path.dirname(os.path.dirname(__file__)), "tools", "discover_moss_layout.py"))
-disc = importlib.util.module_from_spec(_spec)
-sys.modules["discover_moss_layout"] = disc
-_spec.loader.exec_module(disc)
 
 D = 8
 N_IMG = 16
@@ -103,10 +94,17 @@ def test_strongest_cell():
 
 def test_render_config_marks_unknowns():
     f = disc.Findings(vae_downscale=16, patch_size=1, text_position="suffix")
-    out = disc.render_config(f)
-    assert "TEXT_POSITION = 'suffix'" in out
-    assert "IMAGE_ORDER = None  # NOT ESTABLISHED" in out
-    assert "patch_size = 1" in out
+    out = disc.render_config(f, edit_ran=False)
+    assert "text_position = suffix" in out
+    assert "image_order   = NOT ESTABLISHED" in out
+    assert "patch_size    = 1" in out
+    assert "TEXT_POSITION = 'suffix'" in out and "IMAGE_ORDER = None  # NOT ESTABLISHED" in out
+    assert "'none' is exact" in out          # edit pass skipped: explain what that means
+
+
+def test_parse_edit_methods():
+    assert disc.parse_edit_methods("default, index_timestep_zero") == [None, "index_timestep_zero"]
+    assert disc.parse_edit_methods("") == [None]
 
 
 class _TwoLists(nn.Module):

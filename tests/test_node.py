@@ -281,3 +281,38 @@ def test_outputs_and_caption_input_declared(fake_comfy):
     cls = node.MossRegionalLora
     assert cls.RETURN_TYPES == ("MODEL", "STRING")
     assert list(cls.INPUT_TYPES()["required"])[-1] == "caption"   # appended: old workflows keep widget order
+
+
+# ------------------------------------------------------------------ layout as advanced options
+def test_advanced_options_supply_the_layout(fake_comfy):
+    """With the three options set on the node, LoRA boxes run even though layout_config.py is unset."""
+    patcher, node = fake_comfy
+    out = apply(node, patcher, regions_json((FULL, 1.0)),
+                text_position="suffix", image_order="raster", source_tokens="none")
+    assert out["ui"]["moss_regional_lora"][0]["status"] == "active"
+    assert list(out["result"][0].injections) == ["moss_regional_lora"]
+
+
+def test_partly_set_options_name_only_the_missing_ones(fake_comfy):
+    patcher, node = fake_comfy
+    with pytest.raises(LayoutNotEstablished) as e:
+        apply(node, patcher, regions_json((FULL, 1.0)), text_position="suffix", image_order="raster")
+    msg = str(e.value)
+    assert "source_tokens" in msg and "text_position" not in msg
+    assert "MOSS-Image Layout Discovery" in msg
+
+
+def test_not_set_options_fall_back_to_layout_config(fake_comfy, monkeypatch):
+    patcher, node = fake_comfy
+    set_layout(monkeypatch, s="none")
+    out = apply(node, patcher, regions_json((FULL, 1.0)), source_tokens="not set")
+    assert out["ui"]["moss_regional_lora"][0]["status"] == "active"
+
+
+def test_advanced_options_declared(fake_comfy):
+    _, node = fake_comfy
+    opt = node.MossRegionalLora.INPUT_TYPES()["optional"]
+    for name in ("text_position", "image_order", "source_tokens"):
+        choices, spec = opt[name]
+        assert choices[0] == "not set" and spec["default"] == "not set" and spec["advanced"] is True
+    assert "MossLayoutDiscovery" in node.NODE_CLASS_MAPPINGS

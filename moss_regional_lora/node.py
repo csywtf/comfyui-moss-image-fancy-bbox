@@ -8,7 +8,8 @@ import os
 from collections import OrderedDict
 
 from .gating import RegionalLoraController, iter_linear_modules
-from .layout import load_layout
+from .layout import (IMAGE_ORDERS, NOT_SET, SOURCE_TOKEN_POSITIONS, TEXT_POSITIONS, load_layout,
+                     resolve_config)
 from .lora_file import generic_key_map, parse_lora
 from .layout_prompt import build_layout_prompt
 from .regions import parse_document
@@ -97,6 +98,21 @@ class MossRegionalLora:
                                        "tooltip": "Description of the whole image: the layout prompt's summary "
                                                   "caption. Boxes with a caption are added as layout items."}),
             },
+            # Values measured by the "MOSS-Image Layout Discovery" node. "not set" falls back to layout_config.py.
+            "optional": {
+                "text_position": ([NOT_SET, *TEXT_POSITIONS], {
+                    "default": NOT_SET, "advanced": True,
+                    "tooltip": "Where the prompt sits in the transformer sequence relative to the image tokens. "
+                               "Copy it from the MOSS-Image Layout Discovery report."}),
+                "image_order": ([NOT_SET, *IMAGE_ORDERS], {
+                    "default": NOT_SET, "advanced": True,
+                    "tooltip": "Order of the image tokens (raster = row by row from the top left). "
+                               "Copy it from the MOSS-Image Layout Discovery report."}),
+                "source_tokens": ([NOT_SET, *SOURCE_TOKEN_POSITIONS], {
+                    "default": NOT_SET, "advanced": True,
+                    "tooltip": "Where an edit pipeline's source-image tokens sit in the sequence. "
+                               "Copy it from the MOSS-Image Layout Discovery report."}),
+            },
         }
 
     RETURN_TYPES = ("MODEL", "STRING")
@@ -116,7 +132,7 @@ class MossRegionalLora:
         return float("nan")
 
     def apply(self, model, width, height, regions, vae_downscale, patch_size, ramp_start, ramp_end, steps,
-              strict, caption=""):
+              strict, caption="", text_position=NOT_SET, image_order=NOT_SET, source_tokens=NOT_SET):
         doc = parse_document(regions)
         for n in doc.notes:
             log.info("[MOSS Regional LoRA] %s", n)
@@ -134,10 +150,11 @@ class MossRegionalLora:
             # Prompt-only (or empty): nothing touches the transformer, so no layout is needed.
             return out({"status": "prompt-only", "message": "no box has a LoRA; model passed through unchanged"})
 
-        layout = load_layout(strict=strict)          # raises in strict mode if undiscovered (FR-11)
+        config = resolve_config(text_position, image_order, source_tokens)
+        layout = load_layout(config, strict=strict)  # raises in strict mode if undiscovered (FR-11)
         if layout is None:
-            msg = ("MOSS-Image layout constants are unset (see tools/discover_moss_layout.py); strict is off, "
-                   "so the model is passed through WITHOUT any regional LoRA.")
+            msg = ("MOSS-Image layout is not set (advanced options; values from the MOSS-Image Layout Discovery "
+                   "node); strict is off, so the model is passed through WITHOUT any regional LoRA.")
             log.warning("[MOSS Regional LoRA] %s", msg)
             return out({"status": "inactive", "message": msg})
 
@@ -179,5 +196,8 @@ class MossRegionalLora:
             log.warning("[MOSS Regional LoRA] %s", msg)
         return out(summary)
 
-NODE_CLASS_MAPPINGS = {"MossRegionalLora": MossRegionalLora}
-NODE_DISPLAY_NAME_MAPPINGS = {"MossRegionalLora": "MOSS-Image Regional LoRA + Layout Prompt"}
+from .discovery_node import MossLayoutDiscovery  # noqa: E402
+
+NODE_CLASS_MAPPINGS = {"MossRegionalLora": MossRegionalLora, "MossLayoutDiscovery": MossLayoutDiscovery}
+NODE_DISPLAY_NAME_MAPPINGS = {"MossRegionalLora": "MOSS-Image Regional LoRA + Layout Prompt",
+                              "MossLayoutDiscovery": "MOSS-Image Layout Discovery"}
