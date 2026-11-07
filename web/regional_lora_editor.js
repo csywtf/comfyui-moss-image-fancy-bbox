@@ -43,6 +43,17 @@ const CSS = `
 .mrl-bbox{font-family:monospace;font-size:11px;opacity:.85;min-width:130px}
 .mrl-oob{color:#fb4}
 .mrl-status{opacity:.85}
+.mrl-item{border-bottom:1px solid rgba(128,128,128,.2)}
+.mrl-item .mrl-row{border-bottom:none}
+.mrl-prompt{display:flex;align-items:center;gap:4px;padding:0 4px 3px 26px}
+.mrl-prompt.in-group{padding-left:40px}
+.mrl-prompt.sel{background:rgba(80,140,255,.25)}
+.mrl-prompt input.mrl-caption{flex:1 1 auto;min-width:80px}
+.mrl-prompt input.mrl-render{width:110px}
+.mrl-prompt input[type=text]{background:transparent;color:inherit;border:1px solid rgba(128,128,128,.4)}
+.mrl-prompt input[type=color]{width:18px;height:16px;padding:0;border:none;background:none}
+.mrl-swatch{display:inline-flex;align-items:center}
+.mrl-prompt button{background:var(--comfy-input-bg,#222);color:inherit;border:1px solid var(--border-color,#555);border-radius:3px;padding:0 4px;cursor:pointer;line-height:16px;font-size:11px}
 `;
 
 function injectCss() {
@@ -650,7 +661,8 @@ class RegionEditor {
       ctx.setLineDash([]);
       const vis = G.clipRect(rect, v.W, v.H);
       if (vis) {
-        const label = `${r.name || r.id}${r.locked ? " 🔒" : ""}`;
+        const kind = [r.lora ? "LoRA" : "", S.hasPrompt(r) ? (r.label || "object") : ""].filter(Boolean).join(" + ");
+        const label = `${r.name || r.id}${kind ? ` · ${kind}` : ""}${r.locked ? " 🔒" : ""}`;
         ctx.font = `${12 * px}px sans-serif`;
         const tw = ctx.measureText(label).width;
         ctx.fillStyle = hexToRgba(col, 0.85);
@@ -826,9 +838,46 @@ class RegionEditor {
       if (e.target !== row && e.target.tagName !== "SPAN") return;
       this.select(id, e.shiftKey || e.ctrlKey || e.metaKey);
     });
-    this.dropTarget(row, id, inGroup ? r.group : null);
-    if (ro) for (const x of row.querySelectorAll("input,button,select")) x.disabled = true;
-    return row;
+    const item = el("div", { class: "mrl-item" }, [row, this.promptRow(r, inGroup)]);
+    this.dropTarget(item, id, inGroup ? r.group : null);
+    if (ro) for (const x of item.querySelectorAll("input,button,select")) x.disabled = true;
+    return item;
+  }
+
+  /** Second line of a layer row: the box's layout-prompt item (label, caption, text, palette). */
+  promptRow(r, inGroup) {
+    const id = r.id;
+    const upd = (patch) => this.commit(S.updateRegion(this.state, id, patch));
+    const label = el("select", { title: "Layout label: object, character, or text (rendered text)" });
+    for (const l of S.LABELS) label.appendChild(el("option", { value: l, text: l }));
+    if (!S.LABELS.includes(r.label)) label.appendChild(el("option", { value: r.label, text: r.label }));
+    label.value = r.label || "object";
+    label.addEventListener("change", () => upd({ label: label.value }));
+    const caption = el("input", {
+      type: "text",
+      class: "mrl-caption",
+      value: r.caption || "",
+      placeholder: "caption for the layout prompt (empty = LoRA only)",
+      title: "Caption: this box becomes a layout-prompt item when it has one",
+    });
+    caption.addEventListener("change", () => upd({ caption: caption.value }));
+    const parts = [label, caption];
+    if (r.label === "text") {
+      const text = el("input", { type: "text", class: "mrl-render", value: r.text || "", placeholder: "text to render", title: "Text rendered in this box" });
+      text.addEventListener("change", () => upd({ text: text.value }));
+      parts.push(text);
+    }
+    const palette = Array.isArray(r.palette) ? r.palette : [];
+    palette.forEach((c, k) => {
+      const swatch = el("input", { type: "color", value: /^#[0-9a-f]{6}$/i.test(c) ? c : "#000000", title: `Palette colour ${k + 1}` });
+      swatch.addEventListener("change", () => upd({ palette: palette.map((x, j) => (j === k ? swatch.value.toUpperCase() : x)) }));
+      const rm = el("button", { text: "×", title: "Remove colour", onclick: () => upd({ palette: palette.filter((_, j) => j !== k) }) });
+      parts.push(el("span", { class: "mrl-swatch" }, [swatch, rm]));
+    });
+    if (palette.length < S.MAX_PALETTE) {
+      parts.push(el("button", { text: "+ colour", title: "Add a palette colour (up to 5)", onclick: () => upd({ palette: [...palette, "#808080"] }) }));
+    }
+    return el("div", { class: `mrl-prompt${this.selected.has(id) ? " sel" : ""}${inGroup ? " in-group" : ""}` }, parts);
   }
 
   addGroup() {
@@ -842,9 +891,10 @@ class RegionEditor {
 
   setStatus(summary) {
     if (!summary) return;
+    const items = summary.prompt_items != null ? ` · ${summary.prompt_items} layout prompt item(s)` : "";
     if (summary.status === "active") {
-      this.status = `Last run: ${summary.regions} region(s), ${summary.applied} LoRA layer(s) on ${summary.modules} module(s), ${summary.skipped} key(s) skipped`;
-    } else this.status = `Last run: ${summary.message || "inactive"}`;
+      this.status = `Last run: ${summary.regions} LoRA region(s), ${summary.applied} LoRA layer(s) on ${summary.modules} module(s), ${summary.skipped} key(s) skipped${items}`;
+    } else this.status = `Last run: ${summary.message || "inactive"}${items}`;
     this.statusLine.textContent = this.status;
   }
 }

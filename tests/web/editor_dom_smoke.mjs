@@ -178,6 +178,21 @@ await page.locator(".mrl-row").nth(1).locator("button", { hasText: "▲" }).clic
 assert.deepEqual((await json()).regions.map((r) => r.name), ["Bob", "Alice"]);
 console.log("reorder ok");
 
+// 7b. layout-prompt fields on the first box
+const first = page.locator(".mrl-item").first().locator(".mrl-prompt");
+await first.locator("select").selectOption("text");
+await page.locator(".mrl-item").first().locator(".mrl-prompt input.mrl-caption").fill("neon sign");
+await page.locator(".mrl-item").first().locator(".mrl-prompt input.mrl-caption").press("Tab");
+await page.locator(".mrl-item").first().locator(".mrl-prompt input.mrl-render").fill("OPEN");
+await page.locator(".mrl-item").first().locator(".mrl-prompt input.mrl-render").press("Tab");
+await page.locator(".mrl-item").first().locator(".mrl-prompt button", { hasText: "+ colour" }).click();
+s = await json();
+assert.equal(s.regions[0].label, "text");
+assert.equal(s.regions[0].caption, "neon sign");
+assert.equal(s.regions[0].text, "OPEN");
+assert.deepEqual(s.regions[0].palette, ["#808080"]);
+console.log("prompt fields ok");
+
 // 8. parse error: visible error state, and nothing the user does on the canvas overwrites the text
 const broken = '{"version": 1, "regions": [ {"name": "oops"';
 await page.locator("#raw").fill(broken);

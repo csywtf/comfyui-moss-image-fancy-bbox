@@ -1,13 +1,20 @@
-# MOSS-Image Regional LoRA (ComfyUI custom node)
+# MOSS-Image Regional LoRA + Layout Prompt (ComfyUI custom node)
 
-Applies a LoRA to a **rectangular region** of a MOSS-Image generation instead of the whole canvas.
-Two character LoRAs in two boxes stay two different people, and a character's look stays out of the
-background.
+One node to draw the boxes of a MOSS-Image generation. Each box can carry:
 
-> **The node refuses to run until you have done the layout discovery below.** It needs three facts
-> about MOSS-Image's transformer sequence that must be measured on your machine. A wrong guess would
-> produce a node that *appears* to work (the LoRA still changes the picture) while the mask sits on
-> the wrong tokens.
+- a **layout-prompt item**: a label (object, character or text), a caption, text to render and a
+  colour palette, written into the MOSS-Image layout prompt exactly as ComfyUI's *Create Bounding
+  Boxes* + *MOSS-Image Layout Prompt* would;
+- a **LoRA** applied only inside the box, so two character LoRAs in two boxes stay two different
+  people and a character's look stays out of the background;
+- or **both**.
+
+The node outputs the patched MODEL and the finished layout prompt STRING.
+
+> **LoRA boxes need the layout discovery below first; until then the node refuses to apply them.**
+> It needs three facts about MOSS-Image's transformer sequence that must be measured on your machine.
+> A wrong guess would produce a node that *appears* to work (the LoRA still changes the picture) while
+> the mask sits on the wrong tokens. Prompt-only boxes don't touch the model and work right away.
 
 ## Install
 
@@ -26,14 +33,21 @@ automatically through the node's `WEB_DIRECTORY`; there is nothing to install in
 
 ## Where the node goes
 
-`model_patches/moss_image` → **MOSS-Image Regional LoRA**
+`model_patches/moss_image` → **MOSS-Image Regional LoRA + Layout Prompt**
 
 ```
-Load Checkpoint ──MODEL──▶ MOSS-Image Regional LoRA ──MODEL──▶ KSampler
-                                (draw boxes here)
+Load Diffusion Model ──MODEL──▶ MOSS-Image Regional LoRA ──model───▶ KSampler (model)
+                                 + Layout Prompt          ──prompt──▶ CLIP Text Encode (text) ──▶ KSampler (positive)
+                                 (draw boxes here)
+Load CLIP (type moss_image) ──CLIP──▶ CLIP Text Encode
+Load VAE ──VAE──▶ VAE Decode
 ```
 
-Place it on the MODEL line between the loader (and any ordinary `LoraLoader`s) and the sampler.
+It replaces *Create Bounding Boxes* → *MOSS-Image Layout Prompt*. Place it on the MODEL line between
+the loader (and any ordinary `LoraLoader`s) and the sampler, and connect its `prompt` output to your
+positive text encode (convert that node's text to an input if needed). CLIP and the VAE stay wired as
+usual; the node never touches them, and a LoRA's text-encoder keys are skipped (put trigger words in
+a caption instead).
 Set `width`/`height` to the size of the image you are generating and `steps` to the sampler's step
 count. It is built to sit alongside normal `LoraLoader` nodes, ComfyUI's low-VRAM weight casting and
 offload, and `torch.compile`, without turning any of them off (the hooks only read each layer's input
@@ -48,7 +62,8 @@ Inputs:
 | `vae_downscale`, `patch_size` | pixels per latent cell and latent cells per token; the discovery tool prints both (ComfyUI's MOSS-Image latent format is 16 px per cell) |
 | `ramp_start`, `ramp_end` | the LoRA fades in from 0 at `ramp_start` of the steps to full at `ramp_end` (default 0.15 → 1.0), so it fills the layout instead of fighting it |
 | `steps` | total sampling steps, for the ramp |
-| `strict` | on: refuse to run while the layout is unverified and raise on any alignment problem. Off: pass the model through untouched (with a warning) instead |
+| `strict` | on: refuse to apply LoRAs while the layout is unverified and raise on any alignment problem. Off: pass the model through untouched (with a warning) instead. Prompt-only boxes work either way |
+| `caption` | description of the whole image: the layout prompt's summary caption. With no captioned boxes, `prompt` is just this text |
 
 ## Why the weights are never merged
 
@@ -89,8 +104,13 @@ with y pointing down. This is the same convention as ComfyUI's *MOSS-Image Layou
 selected box's stored value is shown above the canvas.
 
 **Layer order:** the top row of the layer list is drawn first (underneath); the bottom row is drawn
-last (on top). The region list the node applies is in exactly this order, minus hidden rows.
-Groups only organise rows; they change nothing about the output.
+last (on top). LoRAs and layout-prompt items are emitted in exactly this order, minus hidden rows, so
+put the background first and the foreground last, as with *Create Bounding Boxes*. Groups only
+organise rows; they change nothing about the output.
+
+**What a box does** is decided by its fields. It is a layout-prompt item when it has a caption (or,
+for a `text` box, text to render); it applies a LoRA when one is selected with a non-zero weight. A
+box with only a LoRA leaves the prompt alone; a box with only a caption leaves the model alone.
 
 | action | how |
 |---|---|
@@ -107,8 +127,10 @@ Groups only organise rows; they change nothing about the output.
 | reorder | ▲ / ▼ buttons, or drag a row by its ⠿ grip |
 | group | **+ Group** (puts the selected regions in a new group), or pick a group in a row |
 
-The keyboard shortcuts work while the canvas has focus (click it first). A row has a visibility
-toggle, colour, name, box readout, LoRA, weight, lock, group, move and delete controls; ⚠ marks a
+The keyboard shortcuts work while the canvas has focus (click it first). A row's first line has a
+visibility toggle, colour, name, box readout, LoRA, weight, lock, group, move and delete controls; its
+second line has the layout label, caption, text to render (`text` boxes) and up to five palette
+colours. The canvas label shows what each box does (`LoRA`, its label, or both). ⚠ marks a
 box that extends past the canvas (allowed, but usually a mistake). Locked regions cannot be moved
 or resized on the canvas. Group headers collapse, rename, show all, hide all, move and delete all.
 An optional reference image from ComfyUI's `input` folder can be shown under the boxes with an

@@ -10,7 +10,8 @@ from collections import OrderedDict
 from .gating import RegionalLoraController, iter_linear_modules
 from .layout import load_layout
 from .lora_file import generic_key_map, parse_lora
-from .regions import parse_regions
+from .layout_prompt import build_layout_prompt
+from .regions import parse_document
 
 log = logging.getLogger("moss_regional_lora")
 
@@ -88,38 +89,57 @@ class MossRegionalLora:
                 "steps": ("INT", {"default": 20, "min": 1, "max": 10000,
                                   "tooltip": "Total sampling steps; set it to the sampler's step count."}),
                 "strict": ("BOOLEAN", {"default": True,
-                                       "tooltip": "Refuse to run while the sequence layout is unverified, and raise "
-                                                  "instead of warning when a mask cannot be aligned."}),
+                                       "tooltip": "Refuse to apply LoRAs while the sequence layout is unverified, and "
+                                                  "raise instead of warning when a mask cannot be aligned. Boxes "
+                                                  "that only carry a prompt work either way."}),
+                # last, so workflows saved before it existed keep their widget values in place
+                "caption": ("STRING", {"multiline": True, "dynamicPrompts": True, "default": "",
+                                       "tooltip": "Description of the whole image: the layout prompt's summary "
+                                                  "caption. Boxes with a caption are added as layout items."}),
             },
         }
 
-    RETURN_TYPES = ("MODEL",)
+    RETURN_TYPES = ("MODEL", "STRING")
+    RETURN_NAMES = ("model", "prompt")
+    OUTPUT_TOOLTIPS = ("The model with each box's LoRA applied inside its box.",
+                       "The MOSS-Image layout prompt (same format as MOSS-Image Layout Prompt); "
+                       "connect it to the positive text encode.")
     FUNCTION = "apply"
     CATEGORY = "model_patches/moss_image"
-    DESCRIPTION = ("Applies LoRAs to rectangular regions of a MOSS-Image generation by gating each LoRA's "
-                   "delta per token at forward time. Weights are never merged.")
+    DESCRIPTION = ("Draw boxes for a MOSS-Image generation. Each box can carry a layout-prompt caption, a LoRA "
+                   "applied only inside the box (gated per token at forward time, weights never merged), or both. "
+                   "Outputs the patched model and the layout prompt.")
 
     @classmethod
     def IS_CHANGED(cls, **kwargs):
         # The hooks live outside ModelPatcher's weight-patch tracking; never let the cache reuse us (NFR-4).
         return float("nan")
 
-    def apply(self, model, width, height, regions, vae_downscale, patch_size, ramp_start, ramp_end, steps, strict):
-        layout = load_layout(strict=strict)          # raises in strict mode if undiscovered (FR-11)
+    def apply(self, model, width, height, regions, vae_downscale, patch_size, ramp_start, ramp_end, steps,
+              strict, caption=""):
+        doc = parse_document(regions)
+        for n in doc.notes:
+            log.info("[MOSS Regional LoRA] %s", n)
+        prompt = build_layout_prompt(caption or "", doc.prompt_items)
         m = model.clone()
         _strip_previous(m)
+
+        def out(summary):
+            summary.setdefault("prompt_items", len(doc.prompt_items))
+            summary.setdefault("notes", doc.notes)
+            return {"ui": {"moss_regional_lora": [summary]}, "result": (m, prompt)}
+
+        specs = doc.loras
+        if not specs:
+            # Prompt-only (or empty): nothing touches the transformer, so no layout is needed.
+            return out({"status": "prompt-only", "message": "no box has a LoRA; model passed through unchanged"})
+
+        layout = load_layout(strict=strict)          # raises in strict mode if undiscovered (FR-11)
         if layout is None:
             msg = ("MOSS-Image layout constants are unset (see tools/discover_moss_layout.py); strict is off, "
                    "so the model is passed through WITHOUT any regional LoRA.")
             log.warning("[MOSS Regional LoRA] %s", msg)
-            return {"ui": {"moss_regional_lora": [{"status": "inactive", "message": msg}]}, "result": (m,)}
-
-        specs, notes = parse_regions(regions)
-        for n in notes:
-            log.info("[MOSS Regional LoRA] %s", n)
-        if not specs:
-            msg = "no visible regions with a LoRA; model passed through unchanged"
-            return {"ui": {"moss_regional_lora": [{"status": "inactive", "message": msg, "notes": notes}]}, "result": (m,)}
+            return out({"status": "inactive", "message": msg})
 
         diffusion_model = m.get_model_object("diffusion_model")
         key_map = _key_map(m, diffusion_model)
@@ -148,17 +168,16 @@ class MossRegionalLora:
             "modules": len(controller.gates),
             "applied": controller.applied_count,
             "skipped": len(skipped),
-            "notes": notes,
         }
-        log.info("[MOSS Regional LoRA] %d region(s), %d LoRA layer(s) on %d module(s), %d key(s) skipped",
-                 summary["regions"], summary["applied"], summary["modules"], summary["skipped"])
+        log.info("[MOSS Regional LoRA] %d LoRA region(s), %d LoRA layer(s) on %d module(s), %d key(s) skipped, "
+                 "%d layout item(s)", summary["regions"], summary["applied"], summary["modules"],
+                 summary["skipped"], len(doc.prompt_items))
         if controller.applied_count == 0:
             msg = "none of the selected LoRAs' keys resolved to a linear module of this model"
             if strict:
                 raise RuntimeError(f"[MOSS Regional LoRA] {msg}; {len(skipped)} key(s) skipped (see log)")
             log.warning("[MOSS Regional LoRA] %s", msg)
-        return {"ui": {"moss_regional_lora": [summary]}, "result": (m,)}
-
+        return out(summary)
 
 NODE_CLASS_MAPPINGS = {"MossRegionalLora": MossRegionalLora}
-NODE_DISPLAY_NAME_MAPPINGS = {"MossRegionalLora": "MOSS-Image Regional LoRA"}
+NODE_DISPLAY_NAME_MAPPINGS = {"MossRegionalLora": "MOSS-Image Regional LoRA + Layout Prompt"}

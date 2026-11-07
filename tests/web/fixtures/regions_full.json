@@ -16,6 +16,12 @@
       "locked": false,
       "color": "#e6194b",
       "group": "g-chars",
+      "label": "character",
+      "caption": "Alice, red coat, short black hair",
+      "text": "",
+      "palette": [
+        "#AA2233"
+      ],
       "notes": "left character",
       "x_future": {
         "trigger": "alice",
@@ -39,7 +45,11 @@
       "visible": true,
       "locked": true,
       "color": "#4363d8",
-      "group": "g-chars"
+      "group": "g-chars",
+      "label": "character",
+      "caption": "",
+      "text": "",
+      "palette": []
     },
     {
       "id": "r-sky",
@@ -56,6 +66,13 @@
       "locked": false,
       "color": "#42d4f4",
       "group": null,
+      "label": "text",
+      "caption": "neon sign",
+      "text": "OPEN 24/7 — 営業中",
+      "palette": [
+        "#FF00FF",
+        "#00FFFF"
+      ],
       "x_extra_number": 3.25
     }
   ],

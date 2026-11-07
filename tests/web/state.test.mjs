@@ -172,3 +172,18 @@ test("undo / redo keeps at least 20 operations", () => {
   h.record("v24");
   assert.equal(h.canRedo, false);
 });
+
+test("prompt fields: defaults for older workflows, and which boxes become layout items", () => {
+  const res = S.parseState('{"version": 1, "regions": [{"name": "a", "bbox": [0, 0, 5, 5], "lora": "a.safetensors"}]}');
+  assert.ok(res.ok);
+  const r = res.state.regions[0];
+  assert.equal(r.label, "object");
+  assert.equal(r.caption, "");
+  assert.deepEqual(r.palette, []);
+  assert.equal(S.hasPrompt(r), false);                                   // LoRA only
+  assert.equal(S.hasPrompt({ ...r, caption: "a cat" }), true);           // prompt
+  assert.equal(S.hasPrompt({ ...r, label: "text", text: "SALE" }), true); // text box with text only
+  assert.equal(S.hasPrompt({ ...r, label: "object", text: "SALE" }), false);
+  const bad = S.parseState('{"regions": [{"bbox": [0, 0, 1, 1], "label": "person"}]}');
+  assert.ok(bad.ok && bad.warnings.some((w) => w.includes("person")));
+});
