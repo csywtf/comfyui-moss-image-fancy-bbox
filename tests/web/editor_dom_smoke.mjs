@@ -3,7 +3,7 @@
 // drawing, writing the JSON widget, hand-edit sync, parse-error safety, undo, keyboard — not
 // ComfyUI integration. Needs Playwright with Chromium; skips if unavailable.
 //
-//   node tests/web/editor_dom_smoke.mjs [screenshot.png]
+//   node tests/web/editor_dom_smoke.mjs [final.png] [curve-panel.png]
 
 import { createServer } from "node:http";
 import { readFileSync, existsSync } from "node:fs";
@@ -192,6 +192,51 @@ assert.equal(s.regions[0].caption, "neon sign");
 assert.equal(s.regions[0].text, "OPEN");
 assert.deepEqual(s.regions[0].palette, ["#808080"]);
 console.log("prompt fields ok");
+
+// 7c. strength curve panel (edits the selected box: Bob after the reorder above)
+await page.locator(".mrl-row").first().click({ position: { x: 300, y: 8 } }).catch(() => {});
+async function graphPx(x, y) {
+  return page.evaluate(([x, y]) => {
+    const c = document.querySelector(".mrl-curve-wrap canvas");
+    const r = c.getBoundingClientRect();
+    const PAD = { l: 34, r: 10, t: 8, b: 18 };
+    return { x: r.left + PAD.l + x * (r.width - PAD.l - PAD.r), y: r.top + PAD.t + (1 - y) * (r.height - PAD.t - PAD.b) };
+  }, [x, y]);
+}
+const sel = (await json()).regions.findIndex((r) => r.name === (s.regions[0].name));
+await page.locator(".mrl-curve-bar button", { hasText: "Stop at 50%" }).click();
+s = await json();
+assert.deepEqual(s.regions[sel].curve, [{ x: 0, y: 1, hold: true }, { x: 0.5, y: 0 }, { x: 1, y: 0 }]);
+// add a point at (75%, 60%) on the curve's second segment
+let q = await graphPx(0.75, 0.6);
+await page.mouse.click(q.x, q.y);
+s = await json();
+assert.equal(s.regions[sel].curve.length, 4);
+assert.ok(Math.abs(s.regions[sel].curve[2].x - 0.75) < 0.02 && Math.abs(s.regions[sel].curve[2].y - 0.6) < 0.03, JSON.stringify(s.regions[sel].curve));
+// bend the segment from (50%, 0) to (75%, 60%) by dragging its midpoint handle down
+const c = s.regions[sel].curve;
+q = await graphPx((c[1].x + c[2].x) / 2, (c[1].y + c[2].y) / 2);
+await page.mouse.move(q.x, q.y);
+await page.mouse.down();
+const q2 = await graphPx((c[1].x + c[2].x) / 2, 0.1);
+await page.mouse.move(q2.x, q2.y, { steps: 4 });
+await page.mouse.up();
+s = await json();
+assert.ok(s.regions[sel].curve[1].bend > 0.2, JSON.stringify(s.regions[sel].curve)); // eased in
+// double-click the added point to remove it
+q = await graphPx(s.regions[sel].curve[2].x, s.regions[sel].curve[2].y);
+await page.mouse.dblclick(q.x, q.y);
+s = await json();
+assert.equal(s.regions[sel].curve.length, 3);
+// Delete with the graph focused must not delete the box
+await page.locator(".mrl-curve-wrap canvas").focus();
+await page.keyboard.press("Delete");
+assert.equal((await json()).regions.length, 2);
+// undo reaches curve edits too
+await page.keyboard.press("Control+z");
+assert.equal((await json()).regions[sel].curve.length, 4);
+console.log("curve panel ok");
+if (process.argv[3]) await page.screenshot({ path: process.argv[3] });
 
 // 8. parse error: visible error state, and nothing the user does on the canvas overwrites the text
 const broken = '{"version": 1, "regions": [ {"name": "oops"';

@@ -7,6 +7,8 @@
 // this array order with hidden regions removed. Groups are purely organisational: they only control
 // how rows are shown and moved, never what is emitted beyond the order of their members.
 
+import { FULL, normalize as normalizeCurve } from "./curve.js";
+
 export const SCHEMA_VERSION = 1;
 
 export const PALETTE = [
@@ -95,6 +97,14 @@ export function parseState(text) {
     }
     if (!Array.isArray(r.palette)) {
       return { ok: false, error: `Region ${i + 1} (${r.name || r.id}): palette must be a list of colours` };
+    }
+    // no "curve" = the node's ramp_start/ramp_end (workflows saved before curves); kept absent on purpose
+    if (r.curve !== undefined && r.curve !== null) {
+      try {
+        normalizeCurve(r.curve);
+      } catch (e) {
+        return { ok: false, error: `Region ${i + 1} (${r.name || r.id}): ${e.message}` };
+      }
     }
   }
   const gids = new Set();
@@ -193,6 +203,7 @@ export function addRegion(state, bbox, fields = {}) {
     caption: "",
     text: "",
     palette: [],
+    curve: FULL.map((p) => ({ ...p })),
     ...fields,
   });
   return { state: s, id };

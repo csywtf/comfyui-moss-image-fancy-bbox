@@ -11,6 +11,7 @@ Schema (version 1)::
          "visible": true, "locked": false, "color": "#rrggbb", "group": null | "<group id>",
          "label": "object" | "character" | "text", "caption": "...", "text": "...",
          "palette": ["#RRGGBB", ...],
+         "curve": [{"x": 0, "y": 1}, ...]   (strength over the run; see curve.py; absent = node ramp),
          ...unknown fields are preserved by the editor and ignored here...}
       ],
       "groups": [{"id": "...", "name": "...", "collapsed": false}],
@@ -32,8 +33,9 @@ from __future__ import annotations
 import json
 import math
 from dataclasses import dataclass
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
+from .curve import CurveError, CurvePoint, parse_curve
 from .geometry import GeometryError, validate_bbox
 
 SCHEMA_VERSION = 1
@@ -52,6 +54,7 @@ class RegionSpec:
     bbox: Tuple[float, float, float, float]
     lora: str
     weight: float
+    curve: Optional[Tuple[CurvePoint, ...]] = None   # None: use the node's ramp_start/ramp_end
 
 
 @dataclass(frozen=True)
@@ -155,5 +158,11 @@ def parse_document(text: str) -> ParsedRegions:
         if weight == 0:
             notes.append(f"region '{name}' has LoRA weight 0; LoRA skipped")
             continue
-        out.append(RegionSpec(index=len(out), name=name, bbox=bbox, lora=lora, weight=float(weight)))
+        curve = None
+        if r.get("curve") is not None:
+            try:
+                curve = parse_curve(r["curve"], where)
+            except CurveError as e:
+                raise RegionsError(str(e)) from None
+        out.append(RegionSpec(index=len(out), name=name, bbox=bbox, lora=lora, weight=float(weight), curve=curve))
     return ParsedRegions(out, items, notes)
