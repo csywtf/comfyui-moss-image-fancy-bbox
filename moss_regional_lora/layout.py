@@ -101,8 +101,8 @@ def load_layout(config=None, strict: bool = True) -> Optional[Layout]:
         if strict:
             options = ", ".join(OPTION_NAMES[m] for m in missing)
             raise LayoutNotEstablished(
-                f"MOSS-Image sequence layout has not been established: set {options} in this node's advanced "
-                f"options (or {', '.join(missing)} in moss_regional_lora/layout_config.py). Get the values by "
+                f"MOSS-Image sequence layout has not been established: set {options} in this node's editor "
+                f"(Canvas panel, Advanced) (or {', '.join(missing)} in moss_regional_lora/layout_config.py). Get the values by "
                 f"running the \"{DISCOVERY_NODE}\" node once (or {DISCOVERY_TOOL} from a terminal). Refusing to "
                 "apply LoRAs, because a misaligned mask applies the LoRA to the wrong tokens and looks like a "
                 "working node. Boxes with only a caption work without this.")

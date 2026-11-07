@@ -43,7 +43,8 @@ automatically through the node's `WEB_DIRECTORY`; there is nothing to install in
 ```
 Load Diffusion Model ──MODEL──▶ MOSS-Image Regional LoRA ──model───▶ KSampler (model)
                                  + Layout Prompt          ──prompt──▶ CLIP Text Encode (text) ──▶ KSampler (positive)
-                                 (draw boxes here)
+                                 (draw boxes here)        ──width───▶ Empty latent (width)  ──▶ KSampler (latent_image)
+                                                          ──height──▶ Empty latent (height)
 Load CLIP (type moss_image) ──CLIP──▶ CLIP Text Encode
 Load VAE ──VAE──▶ VAE Decode
 ```
@@ -53,22 +54,28 @@ the loader (and any ordinary `LoraLoader`s) and the sampler, and connect its `pr
 positive text encode (convert that node's text to an input if needed). CLIP and the VAE stay wired as
 usual; the node never touches them, and a LoRA's text-encoder keys are skipped (put trigger words in
 a caption instead).
-Set `width`/`height` to the size of the image you are generating and `steps` to the sampler's step
-count. It is built to sit alongside normal `LoraLoader` nodes, ComfyUI's low-VRAM weight casting and
+Set the image size in the editor's **Canvas** panel and connect the `width`/`height` outputs to your
+empty latent node, so the latent always matches the canvas the boxes are drawn on (the sampler itself
+takes no size; it samples the latent it is given). It is built to sit alongside normal `LoraLoader` nodes, ComfyUI's low-VRAM weight casting and
 offload, and `torch.compile`, without turning any of them off (the hooks only read each layer's input
 and output, and compile without graph breaks).
 
-Inputs:
+Outputs: `model`, `prompt`, and `width`/`height` (the canvas size, for the empty latent node).
 
-| input | meaning |
+Settings: all of them are in the editor's **Canvas** panel (shown when no box is selected). On the
+node they are ordinary inputs that the editor hides, so they are saved with the workflow and sent
+through the API under the names below. A setting whose input is wired to another node shows as
+read-only in the panel, since the wired value is the one used.
+
+| setting | meaning |
 |---|---|
-| `width`, `height` | output canvas in pixels; must match the latent being sampled (checked at run time). The token grid itself is read from the latent, so there is no VAE-downscale or patch-size setting |
-| `regions` | the region list as JSON, edited with the canvas below it (see *Region editor*) |
-| `ramp_start`, `ramp_end` | advanced, legacy: a linear fade-in used only by boxes **without** their own strength curve (workflows saved before curves). New boxes get their own curve (see *Strength curves*) |
-| `steps` | advanced, fallback: the curves follow the sampler's own step count; this is used only if a sampler doesn't report one |
-| `strict` | on: refuse to apply LoRAs while the layout is unverified and raise on any alignment problem. Off: pass the model through untouched (with a warning) instead. Prompt-only boxes work either way |
+| `width`, `height` | output canvas in pixels; must match the latent being sampled (checked at run time). Rounded to whole 16 px latent cells. The token grid itself is read from the latent, so there is no VAE-downscale or patch-size setting |
 | `caption` | description of the whole image: the layout prompt's summary caption. With no captioned boxes, `prompt` is just this text |
-| `text_position`, `image_order`, `source_tokens` | **advanced options**: the layout values reported by the *MOSS-Image Layout Discovery* node. Their defaults (`suffix`, `raster`, `end`) were measured on a real MOSS-Image run. "not set" falls back to `moss_regional_lora/layout_config.py` (unset by default) |
+| `strict` | on: refuse to apply LoRAs while the layout is unverified and raise on any alignment problem. Off: pass the model through untouched (with a warning) instead. Prompt-only boxes work either way |
+| `regions` | the region list as JSON; drawn and edited by the editor, viewable and pasteable with **Edit JSON** (see *Region editor*) |
+| `ramp_start`, `ramp_end` | *Advanced*, legacy: a linear fade-in used only by LoRAs **without** their own strength curve (workflows saved before curves). New LoRAs get their own curve (see *Strength curves*) |
+| `steps` | *Advanced*, fallback: the curves follow the sampler's own step count; this is used only if a sampler doesn't report one |
+| `text_position`, `image_order`, `source_tokens` | *Advanced*: the layout values reported by the *MOSS-Image Layout Discovery* node. Their defaults (`suffix`, `raster`, `end`) were measured on a real MOSS-Image run. "not set" falls back to `moss_regional_lora/layout_config.py` (unset by default) |
 
 ## Why the weights are never merged
 
@@ -98,16 +105,17 @@ skipped, and the count is shown under the editor after a run.
 
 ## Region editor
 
-The editor under the `regions` text box has three panels, with a floating toolbar on the canvas:
+The editor fills the node. It has three panels, with a floating toolbar on the canvas:
 
 ```
 [layers] [ [tools]       canvas        ] [properties]
 ```
 
-The `regions` text is the source of truth: the editor only draws it and writes it back after each
-edit. You can also edit or paste the JSON by hand and the editor follows. If the text stops being
-valid JSON, the editor turns red and becomes read-only until it is fixed; it never overwrites your
-text.
+The `regions` JSON (a hidden input on the node) is the source of truth: the editor only draws it and
+writes it back after each edit. **Edit JSON** (Canvas panel) shows it for copying, and applies pasted
+or hand-edited JSON (undoable); JSON that doesn't parse is refused with the reason. If a workflow
+arrives with invalid JSON, the editor turns red and becomes read-only (except the settings and Edit
+JSON, to fix it); it never overwrites the text.
 
 - **Tools** (floating at the top left of the canvas): **Select** (V) clicks, moves and resizes boxes; clicking the background deselects.
   **Box** (B) draws a new box, then switches back to Select with the new box selected.
@@ -119,8 +127,9 @@ text.
 - **Canvas**: the output canvas with a grid (a third of the canvas by default) and the centre lines.
 - **Properties** (right): for the selected box, its name, colour, box coordinates
   (editable), group, layout-prompt fields, and its **LoRA list**. With nothing selected it shows the
-  canvas settings: grid, snap, and an optional reference image from ComfyUI's `input` folder with an
-  opacity slider (a drawing aid only).
+  **Canvas** panel: image size (with a swap button), caption, strict, a collapsed *Advanced* group,
+  **Edit JSON**, and drawing aids: grid, snap, and an optional reference image from ComfyUI's `input`
+  folder with an opacity slider (a drawing aid only).
 
 Boxes are stored as `[y_min, x_min, y_max, x_max]`, integer pixels, measured from the canvas centre
 with y pointing down. This is the same convention as ComfyUI's *MOSS-Image Layout Prompt* node. The
@@ -193,7 +202,7 @@ loaded model and reports the values to set. It changes nothing; it only measures
 The values come from ComfyUI's MOSS-Image code, not from the weights, so one run covers every
 MOSS-Image checkpoint. The main node's defaults are the values measured on ComfyUI's 0.44-era
 implementation; re-run the discovery after a ComfyUI update, and if it reports different values, set
-them in the main node's advanced options.
+them in the *Advanced* group of the main node's Canvas panel.
 
 1. Add **MOSS-Image Layout Discovery** (`model_patches/moss_image`). Connect your MOSS-Image MODEL
    (straight from the loader, without other patches), CLIP and VAE.
@@ -205,7 +214,7 @@ them in the main node's advanced options.
 
    ```
    ---- set these on MOSS-Image Regional LoRA + Layout Prompt ----
-   advanced options:
+   Advanced (in the editor's Canvas panel):
      text_position = ...
      image_order   = ...
      source_tokens = ...
@@ -214,8 +223,8 @@ them in the main node's advanced options.
      patch_size    = ...
    ```
 
-5. On **MOSS-Image Regional LoRA + Layout Prompt**, open the advanced options and set
-   `text_position`, `image_order` and `source_tokens` to those values. They are saved with the
+5. On **MOSS-Image Regional LoRA + Layout Prompt**, deselect all boxes, open *Advanced* in the
+   Canvas panel and set `text_position`, `image_order` and `source_tokens` to those values. They are saved with the
    workflow; no restart is needed.
 6. Check the preview images: in each `diff_r0_c…` image, the bright spot (where nudging one image
    token changed the model's one-step prediction) should sit inside the green square (where

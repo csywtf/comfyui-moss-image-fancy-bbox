@@ -47,12 +47,19 @@ const raw = document.getElementById("raw");
 function Node() {
   this.size = [1180, 800];
   this.widgets = [
-    { name: "width", value: 1024 },
-    { name: "height", value: 768 },
-    { name: "ramp_start", value: 0.15 },
-    { name: "ramp_end", value: 1.0 },
+    { name: "width", value: 1024, options: { min: 16, max: 16384 } },
+    { name: "height", value: 768, options: { min: 16, max: 16384 } },
     { name: "regions", get value() { return raw.value; }, set value(v) { raw.value = v; } },
+    { name: "ramp_start", value: 0.15, options: { min: 0, max: 1, round: 0.01 } },
+    { name: "ramp_end", value: 1.0, options: { min: 0, max: 1, round: 0.01 } },
+    { name: "steps", value: 20, options: { min: 1, max: 10000 } },
+    { name: "strict", value: true },
+    { name: "caption", value: "" },
+    { name: "text_position", value: "suffix", options: { values: ["not set", "prefix", "suffix"] } },
+    { name: "image_order", value: "raster", options: { values: ["not set", "raster"] } },
+    { name: "source_tokens", value: "end", options: { values: ["not set", "none", "start", "between", "end"] } },
   ];
+  this.inputs = [];
 }
 Node.prototype.addDOMWidget = function (name, type, element) {
   element.style.height = "100%";
@@ -167,6 +174,64 @@ console.log("move ok");
 await click(900, 700);
 assert.match(await propsTitle(), /Canvas/);
 console.log("background deselect ok");
+
+// 5b. the node's inputs are hidden and edited from the Canvas panel
+const wv = (name) => page.evaluate((n) => window.node.widgets.find((w) => w.name === n).value, name);
+assert.ok(await page.evaluate(() => window.node.widgets.every((w) => w.hidden === true)));
+const sizeIn = page.locator(".mrl-size input[type=number]");
+await sizeIn.nth(0).fill("1000");                  // rounded to whole 16 px latent cells
+await sizeIn.nth(0).press("Tab");
+assert.equal(await wv("width"), 1008);
+await page.waitForFunction(() => document.querySelector(".mrl-dims").textContent.startsWith("1008"));
+await page.locator('.mrl-size button[title="Swap width and height"]').click();
+assert.deepEqual([await wv("width"), await wv("height")], [768, 1008]);
+await page.locator('.mrl-size button[title="Swap width and height"]').click();
+await sizeIn.nth(0).fill("1024");
+await sizeIn.nth(0).press("Tab");
+assert.deepEqual([await wv("width"), await wv("height")], [1024, 768]);
+await page.locator(".mrl-props textarea.mrl-caption").pressSequentially("a cozy kitchen");
+assert.equal(await wv("caption"), "a cozy kitchen");    // written while typing
+await page.waitForTimeout(400);                          // a poll while typing keeps the focus
+assert.ok(await page.evaluate(() => document.activeElement?.classList.contains("mrl-caption")));
+await page.locator(".mrl-props .mrl-field", { hasText: "Strict" }).locator("input").uncheck();
+assert.equal(await wv("strict"), false);
+assert.equal(await page.locator(".mrl-props .mrl-field", { hasText: "Image order" }).count(), 0); // collapsed
+await page.locator(".mrl-props .mrl-adv-head").click();
+await page.locator(".mrl-props .mrl-field", { hasText: "Source tok." }).locator("select").selectOption("none");
+assert.equal(await wv("source_tokens"), "none");
+await page.locator(".mrl-props .mrl-field", { hasText: "Steps" }).locator("input").fill("30");
+await page.locator(".mrl-props .mrl-field", { hasText: "Steps" }).locator("input").press("Tab");
+assert.equal(await wv("steps"), 30);
+// a setting wired to another node shows read-only
+await page.evaluate(() => { window.node.inputs = [{ name: "caption", widget: { name: "caption" }, link: 7 }]; });
+await page.waitForFunction(() => document.querySelector(".mrl-props textarea.mrl-caption")?.disabled === true);
+await page.evaluate(() => { window.node.inputs = []; });
+await page.waitForFunction(() => document.querySelector(".mrl-props textarea.mrl-caption")?.disabled === false);
+if (process.argv[4]) await page.screenshot({ path: process.argv[4] });
+console.log("canvas settings ok");
+
+// 5c. Edit JSON: invalid text is refused with a message, valid text replaces the boxes (undoable)
+const before = await page.locator("#raw").inputValue();
+await page.locator(".mrl-props button", { hasText: "Edit JSON" }).click();
+assert.equal(await page.locator(".mrl-json textarea").inputValue(), before);
+if (process.argv[5]) await page.screenshot({ path: process.argv[5] });
+await page.locator(".mrl-json textarea").fill('{"regions": [{"bbox": [5, 0, 0, 5]}]}');
+await page.locator(".mrl-json button", { hasText: "Apply" }).click();
+assert.match(await page.locator(".mrl-json-error").innerText(), /Not applied/);
+assert.equal(await page.locator("#raw").inputValue(), before);
+const one = JSON.stringify({ version: 2, regions: [{ id: "j", name: "From JSON", bbox: [-100, -100, 100, 100], loras: [] }] });
+await page.locator(".mrl-json textarea").fill(one);
+await page.locator(".mrl-json button", { hasText: "Apply" }).click();
+assert.equal(await page.locator(".mrl-json").count(), 0);
+assert.equal(await page.locator("#raw").inputValue(), one);
+await page.waitForFunction(() => [...document.querySelectorAll(".mrl-layers .mrl-name")].some((e) => e.textContent === "From JSON"));
+await page.locator(".mrl-root").focus();
+await page.keyboard.press("Control+z");
+assert.equal(await page.locator("#raw").inputValue(), before);
+await page.locator(".mrl-props button", { hasText: "Edit JSON" }).click();
+await page.keyboard.press("Escape");
+assert.equal(await page.locator(".mrl-json").count(), 0);
+console.log("edit json ok");
 
 // 6. hand-edited JSON is reflected; a version-1 single-LoRA box is read as a LoRA list
 const pasted = {

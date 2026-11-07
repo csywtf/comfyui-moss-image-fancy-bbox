@@ -6,6 +6,10 @@
 // This editor is a view over it: it parses the text, draws it, and writes the serialised result back
 // after each edit. It never keeps state the JSON does not have (selection and the active tool are
 // view state), and it never writes while the JSON fails to parse (8.9a).
+//
+// The node's other inputs (width, height, caption, strict and the advanced options) are hidden on the
+// node and edited from the Canvas panel. They stay ordinary widgets, so they are saved, queued and sent
+// through the API exactly as before; the editor only reads and writes their values.
 
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
@@ -17,6 +21,20 @@ import { icon } from "./icons.js";
 import { dropRemovedGridValues } from "./migrate.js";
 
 const NODE_NAME = "MossRegionalLora";
+const EDITOR_WIDGET = "region_editor";
+const SIZE_STEP = 16; // the width/height widgets' step: whole MOSS-Image latent cells
+// Settings edited in the Canvas panel: [widget name, label, kind]. "Advanced" ones sit in a collapsed group.
+const SETTINGS = [
+  ["strict", "Strict", "bool", "Refuse to apply LoRAs while the sequence layout is unverified, and raise instead of warning when a mask cannot be aligned. Boxes that only carry a prompt work either way."],
+];
+const ADVANCED = [
+  ["ramp_start", "Ramp start", "float", "Only for LoRAs without their own strength curve (workflows saved before curves): fraction of the steps at which the LoRA starts fading in."],
+  ["ramp_end", "Ramp end", "float", "Only for LoRAs without their own strength curve: fraction of the steps at which the LoRA reaches full strength."],
+  ["steps", "Steps", "int", "Fallback only: the strength curves follow the sampler's own step count. Used if a sampler does not report its schedule."],
+  ["text_position", "Text pos.", "combo", "Where the prompt sits in the transformer sequence relative to the image tokens (measured by the MOSS-Image Layout Discovery node)."],
+  ["image_order", "Image order", "combo", "Order of the image tokens (measured by the MOSS-Image Layout Discovery node)."],
+  ["source_tokens", "Source tok.", "combo", "Where an edit pipeline's source-image tokens sit in the sequence (measured by the MOSS-Image Layout Discovery node)."],
+];
 const POLL_MS = 250;
 const HANDLE_PX = 7; // half-size of a resize handle, in screen px
 const MIN_CREATE_PX = 3; // drags shorter than this (image px) are clicks, not creates
@@ -80,7 +98,7 @@ const CSS = `
 .mrl-sec-title{font-weight:bold;opacity:.85;display:flex;align-items:center;gap:6px}
 .mrl-sec-title .grow{flex:1}
 .mrl-field{display:flex;align-items:center;gap:4px}
-.mrl-field>span:first-child{flex:0 0 62px;opacity:.75}
+.mrl-field>span:first-child{flex:0 0 76px;opacity:.75}
 .mrl-field input[type=text],.mrl-field select,.mrl-props textarea{flex:1;min-width:0;background:var(--comfy-input-bg,#222);color:inherit;border:1px solid var(--border-color,#555);border-radius:3px}
 .mrl-props textarea{min-height:44px;resize:vertical;font:12px sans-serif}
 .mrl-bbox-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:3px}
@@ -111,6 +129,18 @@ const CSS = `
 .mrl-curve-wrap canvas{position:absolute;left:0;top:0;outline:none}
 .mrl-status{opacity:.85}
 .mrl-props input[type=color]{width:28px;height:20px}
+.mrl-root{position:relative}
+.mrl-size{display:flex;align-items:center;gap:4px}
+.mrl-size input[type=number]{width:72px}
+.mrl-field input[type=number]{width:72px}
+.mrl-props textarea.mrl-caption{min-height:84px}
+.mrl-adv-head{cursor:pointer;user-select:none}
+.mrl-linked{font-size:11px;color:#9cf}
+.mrl-json{position:absolute;inset:0;z-index:5;display:flex;flex-direction:column;gap:4px;padding:6px;background:var(--comfy-menu-bg,#1e1e1e);border:1px solid #6af;border-radius:4px}
+.mrl-json textarea{flex:1;min-height:0;resize:none;font:12px monospace!important;white-space:pre}
+.mrl-json-bar{display:flex;align-items:center;gap:6px}
+.mrl-json-bar .grow{flex:1}
+.mrl-json-error{color:#f88;white-space:pre-wrap}
 `;
 
 function injectCss() {
@@ -180,6 +210,8 @@ class RegionEditor {
     this.wHeight = node.widgets.find((w) => w.name === "height");
     this.wRampStart = node.widgets.find((w) => w.name === "ramp_start");
     this.wRampEnd = node.widgets.find((w) => w.name === "ramp_end");
+    this.wCaption = node.widgets.find((w) => w.name === "caption");
+    this.advancedOpen = false;
     this.history = new S.History(100);
     this.state = S.emptyState();
     this.parseError = null;
@@ -212,6 +244,7 @@ class RegionEditor {
     this.ro?.disconnect();
     this.curvePanel?.destroy();
     this.closePicker();
+    this.closeJson();
   }
 
   // ------------------------------------------------------------------ DOM
@@ -279,6 +312,101 @@ class RegionEditor {
     this.root.addEventListener("pointerdown", (e) => e.stopPropagation());
   }
 
+  // ------------------------------------------------------------------ node settings (hidden widgets)
+  widget(name) {
+    return this.node.widgets?.find((w) => w.name === name);
+  }
+
+  /** Settings whose input is wired to another node: the link's value wins, so they are shown read-only. */
+  linkedNames() {
+    return (this.node.inputs || []).filter((i) => i.link != null && i.widget?.name).map((i) => i.widget.name);
+  }
+
+  setWidget(name, value) {
+    const w = this.widget(name);
+    if (!w || w.value === value) return;
+    w.value = value;
+    w.callback?.(value, app.canvas, this.node);
+    this.node.setDirtyCanvas?.(true, true);
+    this.node.graph?.change?.();
+    if (name !== "caption") this.poll();
+  }
+
+  /** A control bound to a hidden widget. kind: int | float | bool | combo | size. */
+  settingControl(name, kind, title) {
+    const w = this.widget(name);
+    if (!w) return null;
+    const linked = this.linkedNames().includes(name);
+    const o = w.options || {};
+    let c;
+    if (kind === "bool") {
+      c = el("input", { type: "checkbox", title });
+      c.checked = !!w.value;
+      c.addEventListener("change", () => this.setWidget(name, c.checked));
+    } else if (kind === "combo") {
+      c = el("select", { title });
+      const values = Array.isArray(o.values) ? o.values : [w.value];
+      for (const v of values) c.appendChild(el("option", { value: v, text: v }));
+      c.value = w.value;
+      c.addEventListener("change", () => this.setWidget(name, c.value));
+    } else {
+      const step = kind === "size" ? SIZE_STEP : kind === "int" ? 1 : (o.round || 0.01);
+      c = el("input", { type: "number", step: String(step), value: String(w.value), title });
+      if (o.min != null) c.min = String(o.min);
+      if (o.max != null) c.max = String(o.max);
+      c.addEventListener("change", () => {
+        let v = Number(c.value);
+        if (!Number.isFinite(v)) return (c.value = String(w.value));
+        if (kind === "size") v = Math.round(v / SIZE_STEP) * SIZE_STEP;
+        else if (kind === "int") v = Math.round(v);
+        if (o.min != null) v = Math.max(o.min, v);
+        if (o.max != null) v = Math.min(o.max, v);
+        c.value = String(v);
+        this.setWidget(name, v);
+      });
+    }
+    if (linked) {
+      c.disabled = true;
+      c.title = "Connected to another node's output; that value is used.";
+    }
+    return c;
+  }
+
+  openJson() {
+    this.closeJson();
+    const area = el("textarea", { spellcheck: "false" });
+    area.value = this.text;
+    const error = el("div", { class: "mrl-json-error" });
+    const apply = () => {
+      const res = S.parseState(area.value);
+      if (!res.ok) return (error.textContent = `Not applied: ${res.error}`);
+      this.wRegions.value = area.value;
+      this.closeJson();
+      this.poll(); // records the previous text for undo and re-renders
+    };
+    this.jsonPanel = el("div", { class: "mrl-json" }, [
+      el("div", { class: "mrl-json-bar" }, [
+        el("b", { class: "grow", text: "Regions JSON" }),
+        el("button", { text: "Copy", title: "Copy the JSON to the clipboard", onclick: () => navigator.clipboard?.writeText(area.value) }),
+        el("button", { text: "Apply", title: "Replace the boxes with this JSON (undoable)", onclick: apply }),
+        el("button", { icon: "x", title: "Close without applying", onclick: () => this.closeJson() }),
+      ]),
+      error,
+      area,
+    ]);
+    this.jsonPanel.addEventListener("keydown", (e) => {
+      e.stopPropagation(); // typing here is not an editor shortcut
+      if (e.key === "Escape") this.closeJson();
+    });
+    this.root.appendChild(this.jsonPanel);
+    area.focus();
+  }
+
+  closeJson() {
+    this.jsonPanel?.remove();
+    this.jsonPanel = null;
+  }
+
   // ------------------------------------------------------------------ widget sync
   get text() {
     const v = this.wRegions?.value;
@@ -300,7 +428,11 @@ class RegionEditor {
       this.syncFromWidget(false);
     }
     const { W, H } = this.canvasSize();
-    const d = `${W}x${H}:${this.wRampStart?.value}:${this.wRampEnd?.value}`;
+    // any setting changed elsewhere (ComfyUI's undo, a pasted node) re-renders the panels; the caption
+    // only while it is not being typed in, so typing keeps its focus
+    if (document.activeElement !== this.captionInput) this.captionSeen = this.wCaption?.value;
+    const settings = [...SETTINGS, ...ADVANCED].map(([n]) => this.widget(n)?.value).join(":");
+    const d = `${W}x${H}:${settings}:${this.captionSeen}:${this.linkedNames().join(",")}`;
     if (d !== this.lastDims) {
       this.lastDims = d;
       this.renderAll();
@@ -947,6 +1079,9 @@ class RegionEditor {
   // ------------------------------------------------------------------ properties panel
   renderProps() {
     this.closePicker();
+    // a re-render while the caption is being typed in keeps its focus and cursor
+    const typing = document.activeElement === this.captionInput ? [this.captionInput.selectionStart, this.captionInput.selectionEnd] : null;
+    this.captionInput = null;
     const ro = !!this.parseError;
     const r = this.region(this.primary);
     let body;
@@ -958,12 +1093,17 @@ class RegionEditor {
       body = [this.boxSection(r), this.promptSection(r), this.lorasSection(r)];
     } else {
       this.propsTitle.textContent = "Canvas";
-      body = [this.canvasSection()];
+      body = this.canvasSection().filter(Boolean);
     }
     this.props.replaceChildren(...body);
     // only now is the curve panel (if a LoRA's curve is open) attached and measurable
     if (this.curvePanel.root.isConnected) this.curvePanel.render();
-    if (ro) for (const x of this.props.querySelectorAll("input,button,select,textarea")) x.disabled = true;
+    if (typing && this.captionInput) {
+      this.captionInput.focus();
+      this.captionInput.setSelectionRange(...typing);
+    }
+    // while the JSON doesn't parse, only the node settings and Edit JSON (to fix it) stay usable
+    if (ro) for (const x of this.props.querySelectorAll("input,button,select,textarea")) if (!x.closest(".mrl-keep")) x.disabled = true;
   }
 
   field(label, control) {
@@ -971,8 +1111,81 @@ class RegionEditor {
   }
 
   canvasSection() {
+    return [this.imageSection(), this.captionSection(), this.generationSection(), this.drawingSection()];
+  }
+
+  imageSection() {
+    const linked = this.linkedNames();
+    const wIn = this.settingControl("width", "size", "Width in pixels of the image being generated");
+    const hIn = this.settingControl("height", "size", "Height in pixels of the image being generated");
+    const swap = el("button", {
+      icon: "arrow-left-right",
+      class: "mrl-mini",
+      title: "Swap width and height",
+      onclick: () => {
+        const { W, H } = this.canvasSize();
+        this.setWidget("width", H);
+        this.setWidget("height", W);
+        this.poll();
+      },
+    });
+    if (linked.includes("width") || linked.includes("height")) swap.disabled = true;
+    return el("div", { class: "mrl-sec mrl-keep" }, [
+      el("div", { class: "mrl-sec-title", text: "Image" }),
+      el("div", { class: "mrl-size" }, [el("span", { text: "W", style: "opacity:.75" }), wIn, el("span", { text: "H", style: "opacity:.75" }), hIn, swap]),
+      el("div", { class: "mrl-hint", text: "Connect the width/height outputs to the empty latent node so the image always matches these boxes." }),
+    ]);
+  }
+
+  captionSection() {
+    const w = this.wCaption;
+    if (!w) return null;
+    const area = el("textarea", { class: "mrl-caption", placeholder: "Description of the whole image (the layout prompt's summary caption)" });
+    area.value = typeof w.value === "string" ? w.value : "";
+    // written on every keystroke, so queueing straight from the textarea uses what was typed
+    area.addEventListener("input", () => this.setWidget("caption", area.value));
+    area.addEventListener("keydown", (e) => e.stopPropagation()); // typing is not an editor shortcut
+    area.addEventListener("blur", () => this.poll());
+    if (this.linkedNames().includes("caption")) {
+      area.disabled = true;
+      area.title = "Connected to another node's output; that value is used.";
+    }
+    this.captionInput = area;
+    return el("div", { class: "mrl-sec mrl-keep" }, [
+      el("div", { class: "mrl-sec-title", text: "Caption" }),
+      area,
+      el("div", { class: "mrl-hint", text: "Boxes with their own caption are added to the layout prompt as items." }),
+    ]);
+  }
+
+  generationSection() {
+    const rows = [];
+    for (const [name, label, kind, title] of SETTINGS) {
+      const c = this.settingControl(name, kind, title);
+      if (c) rows.push(this.field(label, c));
+    }
+    const adv = [];
+    for (const [name, label, kind, title] of ADVANCED) {
+      const c = this.settingControl(name, kind, title);
+      if (c) adv.push(this.field(label, c));
+    }
+    const head = el("div", { class: "mrl-sec-title mrl-adv-head", onclick: () => { this.advancedOpen = !this.advancedOpen; this.renderProps(); } }, [
+      icon(this.advancedOpen ? "chevron-down" : "chevron-right", 14),
+      el("span", { class: "grow", text: "Advanced" }),
+    ]);
+    return el("div", { class: "mrl-sec mrl-keep" }, [
+      el("div", { class: "mrl-sec-title" }, [
+        el("span", { class: "grow", text: "Generation" }),
+        el("button", { icon: "braces", text: "Edit JSON", class: "mrl-mini", title: "View, copy or paste the regions JSON", onclick: () => this.openJson() }),
+      ]),
+      ...rows,
+      adv.length ? head : null,
+      ...(this.advancedOpen ? adv : []),
+    ]);
+  }
+
+  drawingSection() {
     const ed = this.state.editor || {};
-    const { W, H } = this.canvasSize();
     const grid = el("input", { type: "number", min: "1", max: "32", step: "1", value: String(ed.grid_divisions ?? 3), style: "width:60px" });
     grid.addEventListener("change", () => this.setEditor({ grid_divisions: Math.max(1, parseInt(grid.value) || 3) }));
     const snap = el("input", { type: "checkbox", title: "Snap to grid while dragging (hold Ctrl/Cmd to bypass)" });
@@ -992,13 +1205,13 @@ class RegionEditor {
       this.setEditor({ reference_opacity: parseFloat(op.value) });
     });
     return el("div", { class: "mrl-sec" }, [
-      el("div", { class: "mrl-hint", text: `${W} × ${H} px (the node's width/height). Select a box to edit it.` }),
+      el("div", { class: "mrl-sec-title", text: "Drawing aids" }),
       this.field("Grid ÷", grid),
       this.field("Snap", snap),
       this.field("Reference", ref),
       refList,
       this.field("Opacity", op),
-      el("div", { class: "mrl-hint", text: "The reference image is a drawing aid only; it never affects the output." }),
+      el("div", { class: "mrl-hint", text: "The reference image is a drawing aid only; it never affects the output. Select a box to edit it." }),
     ]);
   }
 
@@ -1254,6 +1467,14 @@ class RegionEditor {
   }
 }
 
+/** Hide a native widget (ComfyUI frontend: `hidden`; older LiteGraph: zero height). */
+export function hideWidget(w) {
+  if (!w || w.name === EDITOR_WIDGET) return;
+  w.hidden = true;
+  w.computeSize = () => [0, -4];
+  if (w.element?.style) w.element.style.display = "none"; // multiline DOM widgets on older frontends
+}
+
 app.registerExtension({
   name: "moss.RegionalLoraEditor",
   async beforeRegisterNodeDef(nodeType, nodeData) {
@@ -1264,7 +1485,10 @@ app.registerExtension({
       const r = onNodeCreated?.apply(this, arguments);
       const editor = new RegionEditor(this);
       this.__mrlEditor = editor;
-      const widget = this.addDOMWidget("region_editor", "moss_region_editor", editor.root, {
+      // every native input is edited in the editor's Canvas panel instead; hidden widgets keep their
+      // values, so saving, queueing and the API are unchanged
+      for (const w of this.widgets || []) hideWidget(w);
+      const widget = this.addDOMWidget(EDITOR_WIDGET, "moss_region_editor", editor.root, {
         serialize: false,
         hideOnZoom: false,
         getMinHeight: () => 560,
@@ -1272,7 +1496,7 @@ app.registerExtension({
         setValue: () => {},
       });
       widget.serialize = false; // the JSON lives in the "regions" widget only (8.1c)
-      this.setSize([Math.max(this.size[0], 1180), Math.max(this.size[1], 980)]);
+      this.setSize([Math.max(this.size[0], 1180), Math.max(this.size[1], 900)]);
       return r;
     };
 

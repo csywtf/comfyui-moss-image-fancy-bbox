@@ -245,7 +245,7 @@ def prompt_box(bbox=(-10, -10, 10, 10), **kw):
 def test_prompt_only_boxes_work_in_strict_mode_without_discovery(fake_comfy):
     patcher, node = fake_comfy
     out = apply(node, patcher, json.dumps({"version": 1, "regions": [prompt_box()]}), caption="a garden")
-    m, prompt = out["result"]
+    m, prompt = out["result"][:2]
     layout = json.loads(prompt)
     assert layout["summary"] == {"caption": "a garden"}
     assert layout["items"] == [{"label": "object", "caption": "a cat", "bbox": [-10, -10, 10, 10]}]
@@ -263,7 +263,7 @@ def test_non_strict_unset_layout_still_outputs_prompt(fake_comfy):
     patcher, node = fake_comfy
     out = apply(node, patcher, json.dumps({"version": 1, "regions": [prompt_box(lora=LORA_NAME)]}),
                 strict=False, caption="x", **UNSET)
-    m, prompt = out["result"]
+    m, prompt = out["result"][:2]
     assert not m.injections and json.loads(prompt)["items"][0]["caption"] == "a cat"
 
 
@@ -276,7 +276,7 @@ def test_prompt_and_lora_together(fake_comfy, monkeypatch):
         prompt_box(caption="a red ball"),                  # prompt only
     ]})
     out = apply(node, patcher, regions, caption="scene")
-    m, prompt = out["result"]
+    m, prompt = out["result"][:2]
     assert out["ui"]["moss_regional_lora"][0]["regions"] == 2
     assert [i["caption"] for i in json.loads(prompt)["items"]] == ["Alice", "a red ball"]
     assert list(m.injections) == ["moss_regional_lora"]
@@ -285,7 +285,7 @@ def test_prompt_and_lora_together(fake_comfy, monkeypatch):
 def test_outputs_and_caption_input_declared(fake_comfy):
     _, node = fake_comfy
     cls = node.MossRegionalLora
-    assert cls.RETURN_TYPES == ("MODEL", "STRING")
+    assert cls.RETURN_TYPES[:2] == ("MODEL", "STRING")
     assert list(cls.INPUT_TYPES()["required"])[-1] == "caption"   # appended: old workflows keep widget order
 
 
@@ -350,3 +350,13 @@ def test_grid_inputs_removed_and_read_from_the_model(fake_comfy, monkeypatch):
     with pytest.raises(Exception, match="node's canvas is 64x64"):
         m.apply_model(big, context(), topts())
     m.eject_model()
+
+
+def test_width_and_height_outputs(fake_comfy, monkeypatch):
+    """The canvas size is passed on so the empty latent node can take it and stay in sync."""
+    patcher, node = fake_comfy
+    assert node.MossRegionalLora.RETURN_TYPES == ("MODEL", "STRING", "INT", "INT")
+    assert node.MossRegionalLora.RETURN_NAMES[2:] == ("width", "height")
+    set_layout(monkeypatch)
+    for regions in (regions_json((FULL, 1.0)), json.dumps({"version": 2, "regions": []})):   # active / prompt-only
+        assert apply(node, patcher, regions, width=toy.W, height=toy.H)["result"][2:] == (toy.W, toy.H)

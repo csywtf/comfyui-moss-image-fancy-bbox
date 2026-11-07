@@ -123,11 +123,14 @@ class MossRegionalLora:
             },
         }
 
-    RETURN_TYPES = ("MODEL", "STRING")
-    RETURN_NAMES = ("model", "prompt")
+    # new outputs go last, so links in saved workflows keep their slots
+    RETURN_TYPES = ("MODEL", "STRING", "INT", "INT")
+    RETURN_NAMES = ("model", "prompt", "width", "height")
     OUTPUT_TOOLTIPS = ("The model with each box's LoRA applied inside its box.",
                        "The MOSS-Image layout prompt (same format as MOSS-Image Layout Prompt); "
-                       "connect it to the positive text encode.")
+                       "connect it to the positive text encode.",
+                       "The canvas width; connect it to the empty latent node so the image matches the boxes.",
+                       "The canvas height; connect it to the empty latent node so the image matches the boxes.")
     FUNCTION = "apply"
     CATEGORY = "model_patches/moss_image"
     DESCRIPTION = ("Draw boxes for a MOSS-Image generation. Each box can carry a layout-prompt caption, a LoRA "
@@ -155,7 +158,7 @@ class MossRegionalLora:
         def out(summary):
             summary.setdefault("prompt_items", len(doc.prompt_items))
             summary.setdefault("notes", doc.notes)
-            return {"ui": {"moss_regional_lora": [summary]}, "result": (m, prompt)}
+            return {"ui": {"moss_regional_lora": [summary]}, "result": (m, prompt, width, height)}
 
         specs = doc.loras
         if not specs:
@@ -165,7 +168,7 @@ class MossRegionalLora:
         config = resolve_config(text_position, image_order, source_tokens)
         layout = load_layout(config, strict=strict)  # raises in strict mode if undiscovered (FR-11)
         if layout is None:
-            msg = ("MOSS-Image layout is not set (advanced options; values from the MOSS-Image Layout Discovery "
+            msg = ("MOSS-Image layout is not set (Canvas panel, Advanced; values from the MOSS-Image Layout Discovery "
                    "node); strict is off, so the model is passed through WITHOUT any regional LoRA.")
             log.warning("[MOSS Regional LoRA] %s", msg)
             return out({"status": "inactive", "message": msg})

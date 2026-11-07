@@ -214,7 +214,7 @@ def render_config(f: Findings, edit_ran: bool = True) -> str:
 
     lines = [
         "---- set these on MOSS-Image Regional LoRA + Layout Prompt ----",
-        "advanced options:",
+        "Advanced (in the editor's Canvas panel):",
         "  " + opt("text_position", f.text_position),
         "  " + opt("image_order", f.image_order),
         "  " + opt("source_tokens", f.source_tokens) + (f"   ({f.source_note})" if f.source_tokens and f.source_note else ""),
