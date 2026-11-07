@@ -7,7 +7,7 @@ CLIP and VAE; the analysis functions at the top are pure and unit-tested.
 Passes, all with the same seed:
   shapes  first-block input length vs. the image token count implied by the canvas (FR-12b/c)
   order   short vs. long prompt: which end of the sequence stays identical is the image end (FR-12d)
-  probe   perturb exactly one patch's token, generate, locate the change in the image (FR-12e)
+  probe   nudge exactly one patch's token, run one step, locate the change in the prediction (FR-12e)
   edit    with vs. without a source image: are source tokens in the sequence, and where (FR-12f)
 then the values to set are rendered (FR-12g).
 """
@@ -80,37 +80,62 @@ def decide_text_position(len_a: int, len_b: int, ctx_a: int, ctx_b: int, prefix_
     return None, notes
 
 
-def decide_source_position(len_without: int, len_with: int, expected_src: int, prefix_run: int, suffix_run: int,
-                           n_image: int, n_text: int, text_position: Optional[str]) -> Tuple[Optional[str], List[str]]:
-    """Same prompt and seed with and without a source image."""
+def find_block(seq, block, candidates: Sequence[int], atol: float = 0.0) -> Optional[int]:
+    """First offset in ``candidates`` where ``block`` [N, D] occurs exactly (or within atol) in ``seq``."""
+    import torch
+    n = block.shape[0]
+    for o in candidates:
+        if 0 <= o and o + n <= seq.shape[0]:
+            part = seq[o:o + n]
+            if (torch.equal(part, block) if atol == 0 else torch.allclose(part, block, rtol=0, atol=atol)):
+                return o
+    return None
+
+
+def decide_source_position(len_without: int, len_with: int, n_src: int, n_image: int, n_text: int,
+                           image_offset: Optional[int], text_run: Optional[Tuple[int, int]]) -> Tuple[Optional[str], List[str]]:
+    """Where an edit pipeline's source-image tokens sit.
+
+    len_without / len_with: sequence length without / with a source image (same prompt).
+    image_offset: where the output-image block (identical to the run without a source image) was found in
+      the with-source sequence.
+    text_run: (start, end) of the block that changes between two with-source runs that differ only in the
+      prompt; image and source tokens do not depend on the prompt, so this is the text block. (Text tokens
+      themselves may change when a source image is added, e.g. shifted position encodings, so they are
+      located this way rather than by comparing with the run without a source image.)
+    """
     delta = len_with - len_without
     if delta == 0:
         return "none", ["sequence length is unchanged with a source image: source tokens are not in the sequence"]
-    notes = [f"a source image added {delta} tokens (patch-grid count of the source latent: {expected_src})"]
-    if delta != expected_src:
+    notes = [f"a source image added {delta} tokens (patch-grid count of the source latent: {n_src})"]
+    if delta != n_src:
         notes.append("the added count does not match the source latent's patch grid; this node cannot count "
                      "source tokens for this model. Send this output.")
         return None, notes
-    insert_at = prefix_run
-    if prefix_run + suffix_run < len_without:
-        notes.append(f"identical runs ({prefix_run} leading + {suffix_run} trailing) do not cover the "
-                     f"{len_without}-token sequence; inconclusive")
+    if image_offset is None:
+        notes.append("the output-image tokens were not found intact in the with-source sequence; inconclusive")
         return None, notes
-    if text_position is None:
-        notes.append(f"source tokens inserted at index {insert_at}, but the text position is unknown; run --mode order")
+    if text_run is None or text_run[1] - text_run[0] != n_text:
+        notes.append(f"the prompt-dependent block {text_run} is not exactly the {n_text} text tokens; inconclusive")
         return None, notes
-    first_len = n_text if text_position == "prefix" else n_image
-    if insert_at == 0:
-        pos = "start"
-    elif insert_at == first_len:
-        pos = "between"
-    elif insert_at == n_text + n_image:
-        pos = "end"
-    else:
-        notes.append(f"source tokens inserted at index {insert_at}, which is not at the start, between text and "
-                     "image, or at the end; not supported")
+    occupied = sorted([(image_offset, image_offset + n_image), tuple(text_run)])
+    if occupied[0][1] > occupied[1][0]:
+        notes.append(f"image block {image_offset}+{n_image} overlaps text block {text_run}; inconclusive")
         return None, notes
-    notes.append(f"source tokens are inserted at index {insert_at}: SOURCE_TOKENS = {pos!r}")
+    gaps, cursor = [], 0
+    for lo, hi in occupied:
+        if lo > cursor:
+            gaps.append((cursor, lo))
+        cursor = hi
+    if cursor < len_with:
+        gaps.append((cursor, len_with))
+    if len(gaps) != 1 or gaps[0][1] - gaps[0][0] != n_src:
+        notes.append(f"the tokens outside the image and text blocks are {gaps}, not one block of {n_src}; inconclusive")
+        return None, notes
+    start = gaps[0][0]
+    pos = "start" if start == 0 else "end" if gaps[0][1] == len_with else "between"
+    notes.append(f"image tokens at {image_offset}, text at {text_run[0]}..{text_run[1]}, source tokens at "
+                 f"{start}..{gaps[0][1]}: source_tokens = {pos!r}")
     return pos, notes
 
 
@@ -177,11 +202,15 @@ HOW_TO = {
 
 
 def render_config(f: Findings, edit_ran: bool = True) -> str:
+    why = dict(HOW_TO)
+    if edit_ran:
+        why["source_tokens"] = "the edit pass was inconclusive; see problems"
+
     def opt(name, v):
-        return f"{name:<14}= {v}" if v is not None else f"{name:<14}= NOT ESTABLISHED ({HOW_TO[name]})"
+        return f"{name:<14}= {v}" if v is not None else f"{name:<14}= NOT ESTABLISHED ({why[name]})"
 
     def py(v, name):
-        return repr(v) if v is not None else f"None  # NOT ESTABLISHED: {HOW_TO[name]}"
+        return repr(v) if v is not None else f"None  # NOT ESTABLISHED: {why[name]}"
 
     lines = [
         "---- set these on MOSS-Image Regional LoRA + Layout Prompt ----",
@@ -296,9 +325,7 @@ class Settings:
     patch_size: Optional[int] = None          # None: infer from the shapes pass
     text_position: Optional[str] = None       # only for running the probe without the order pass
     prompt: str = "a quiet mountain lake at dawn, pine trees on the shore, soft mist"
-    steps: int = 20
-    cfg: float = 4.0
-    sampler: str = "euler"
+    sampler: str = "euler"        # every pass is a single step from pure noise, so these barely matter
     scheduler: str = "simple"
     seed: int = 42
     probe_strength: float = 8.0
@@ -324,6 +351,7 @@ class Discovery:
             f"{self.latent_channels} channels, {self.vae_downscale} px per latent cell")
         self.block_path, self.blocks = find_blocks(self.dm, settings.blocks, log)
         self.findings = Findings(vae_downscale=self.vae_downscale)
+        self._probe_base = None
 
     # ------------------------------------------------------------------ plumbing
     def encode(self, prompt, refs=None, method=None):
@@ -419,11 +447,16 @@ class Discovery:
         return pos
 
     def probe_once(self, row, col, text_position, p):
+        """Nudge one image token at the first block and see which patch of the model's prediction moves.
+
+        One denoising step at CFG 1, compared in latent space: the nudged token's own output changes
+        most, before sampling has a chance to spread a small change across the whole picture (comparing
+        full generations measured that spread, not the token position).
+        """
         import torch
         from .geometry import canvas_to_centered, coverage_grid, raster_flatten
         from .layout import Layout
         s = self.s
-        self.need_vae("probe")
         rows, cols = self.grid(p)
         cell = self.vae_downscale * p
         box = canvas_to_centered(col * cell, row * cell, (col + 1) * cell, (row + 1) * cell, s.width, s.height)
@@ -442,21 +475,24 @@ class Discovery:
             v = v / v.norm() * x.float().norm(dim=-1).mean().to(x.dtype) * s.probe_strength
             return x + m * v
 
-        if not any(name == "baseline" for name, _ in self.images):
-            base, _ = self.generate(s.prompt, s.steps, s.cfg)
-            self.images.append(("baseline", self.vae.decode(base)[0].detach().float().cpu()))
-        ib = next(img for name, img in self.images if name == "baseline")
-        probed, _ = self.generate(s.prompt, s.steps, s.cfg, probe=probe)
-        ip = self.vae.decode(probed)[0].detach().float().cpu()
-        diff = (ip - ib).abs().mean(dim=-1).detach()
-        (fr, fc), peak, median = strongest_cell(diff, cell)
-        self.images.append((f"probe_r{row}_c{col}", ip))
-        self.images.append((f"diff_r{row}_c{col}", heat(diff, cell, (row, col))))
-        self.log(f"[probe] perturbed image token {row * cols + col} (patch row {row}, col {col}; {cell}px cells, "
-                 f"grid {rows}x{cols}). Largest change: cell row {fr}, col {fc} (mean |diff| {peak:.4f}, "
-                 f"median cell {median:.4f})")
+        if self._probe_base is None:
+            self._probe_base, _ = self.generate(s.prompt, 1, 1.0)
+        probed, _ = self.generate(s.prompt, 1, 1.0, probe=probe)
+        base = self._probe_base
+        latent_diff = (probed.float() - base.float()).abs().mean(dim=1)[0].detach().cpu()     # [h, w]
+        (fr, fc), peak, median = strongest_cell(latent_diff, p)
+        at_target = float(latent_diff[row * p:(row + 1) * p, col * p:(col + 1) * p].mean())
+        if self.vae is not None:
+            if not any(name == "prediction" for name, _ in self.images):
+                self.images.append(("prediction", self.vae.decode(base)[0].detach().float().cpu()))
+            self.images.append((f"probe_r{row}_c{col}", self.vae.decode(probed)[0].detach().float().cpu()))
+        px = latent_diff.repeat_interleave(self.vae_downscale, 0).repeat_interleave(self.vae_downscale, 1)
+        self.images.append((f"diff_r{row}_c{col}", heat(px, cell, (row, col))))
+        self.log(f"[probe] nudged image token {row * cols + col} (patch row {row}, col {col}; grid {rows}x{cols}). "
+                 f"Largest change in the one-step prediction: patch row {fr}, col {fc} (mean |diff| {peak:.4f}; "
+                 f"at patch ({row}, {col}): {at_target:.4f}; median patch {median:.4f})")
         if peak < 4 * max(median, 1e-6):
-            self.log("[probe] WARNING: the strongest cell is not clearly above the rest; raise the probe strength")
+            self.log("[probe] WARNING: the strongest patch is not clearly above the rest; raise the probe strength")
         ok, why = interpret_probe((fr, fc), (row, col), rows, cols)
         self.log(f"[probe] {why}")
         return ok, why
@@ -490,24 +526,42 @@ class Discovery:
         s = self.s
         p = self._patch()
         pos = self.findings.text_position or s.text_position
+        if p is None or pos is None:
+            self.log("[edit] need the patch size and the text position first")
+            self.findings.problems.append("source tokens: patch size or text position unknown")
+            return None
         img = edit_image[:1, :, :, :3]
         if img.shape[1] != s.height or img.shape[2] != s.width:
             img = comfy.utils.common_upscale(img.movedim(-1, 1), s.width, s.height, "bilinear", "disabled").movedim(1, -1)
         ref = self.vae.encode(img)
         rows, cols = self.grid(p)
-        expected_src = (ref.shape[-2] // p) * (ref.shape[-1] // p)
-        _, r0 = self.generate(s.prompt, 1, 1.0)
+        n_img = rows * cols
+        n_src = (ref.shape[-2] // p) * (ref.shape[-1] // p)
+        _, r0 = self.generate(SHORT_PROMPT, 1, 1.0)
         c0 = r0.main_call()
+        n_text = r0.forwards[0]["context"][1]
+        l0 = c0["shape"][1]
+        img_start = 0 if pos == "suffix" else n_text
+        image_block = c0["x"][0][img_start:img_start + n_img]
         results = []
         for method in (s.edit_methods or [None]):
-            _, r1 = self.generate(s.prompt, 1, 1.0, refs=[ref], method=method)
-            c1, f1 = r1.main_call(), r1.forwards[0]
-            l0, l1 = c0["shape"][1], c1["shape"][1]
-            pre, suf = identical_runs(c0["x"][0], c1["x"][0], atol=s.atol)
-            n_text = r0.forwards[0]["context"][1]
-            self.log(f"[edit] reference_latents_method={method!r}: sequence {l0} -> {l1}; model received "
-                     f"ref_latents {f1['refs']}, precomputed ref K/V: {f1['ref_kv']}; identical leading {pre}, trailing {suf}")
-            found, notes = decide_source_position(l0, l1, expected_src, pre, suf, rows * cols, n_text, pos)
+            _, ra = self.generate(SHORT_PROMPT, 1, 1.0, refs=[ref], method=method)
+            ca, fa = ra.main_call(), ra.forwards[0]
+            la = ca["shape"][1]
+            self.log(f"[edit] reference_latents_method={method!r}: sequence {l0} -> {la}; model received "
+                     f"ref_latents {fa['refs']}, precomputed ref K/V: {fa['ref_kv']}")
+            image_offset = text_run = None
+            if la != l0:
+                xa = ca["x"][0]
+                image_offset = find_block(xa, image_block, [0, n_text, n_src, n_text + n_src, n_img, n_img + n_src],
+                                          atol=s.atol)
+                _, rb = self.generate(LONG_PROMPT, 1, 1.0, refs=[ref], method=method)
+                xb = rb.main_call()["x"][0]
+                pre, suf = identical_runs(xa, xb, atol=s.atol)
+                text_run = (pre, la - suf)
+                self.log(f"[edit]   output-image tokens found at {image_offset}; with a different prompt the "
+                         f"sequence is identical in its first {pre} and last {suf} tokens")
+            found, notes = decide_source_position(l0, la, n_src, n_img, n_text, image_offset, text_run)
             for n in notes:
                 self.log(f"[edit]   {n}")
             results.append(found)

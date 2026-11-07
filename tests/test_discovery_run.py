@@ -67,6 +67,8 @@ def fake_comfy(monkeypatch):
         in_seq = extra.get("reference_latents_method") == "index_timestep_zero"
         if refs and not in_seq:
             model.dm.blocks[0](torch.zeros(1, 4, toy.DIM, dtype=torch.float64))   # a precompute pass, outside any model call
+        if refs:
+            ctx = ctx + 0.01      # like MOSS-Image: a source image shifts the text tokens' position encoding
         old = model.dm.layout
         model.dm.layout = Layout("suffix", "raster", "end" if (refs and in_seq) else "none")
         try:
@@ -94,7 +96,7 @@ def fake_comfy(monkeypatch):
 
 
 def settings(**kw):
-    s = dict(width=toy.W, height=toy.H, steps=3, cfg=1.0, edit_methods=[None, "index_timestep_zero"], probe_strength=8.0)
+    s = dict(width=toy.W, height=toy.H, edit_methods=[None, "index_timestep_zero"], probe_strength=8.0)
     s.update(kw)
     return disc.Settings(**s)
 
@@ -113,7 +115,7 @@ def test_full_run_recovers_the_toy_layout(fake_comfy):
     assert f.text_position == "suffix"
     assert f.image_order == "raster"
     assert f.source_tokens == "end"          # out of the sequence for 'default', appended for index_timestep_zero
-    assert [n for n, _ in d.images] == ["baseline", "probe_r0_c0", "diff_r0_c0", "probe_r0_c1", "diff_r0_c1"]
+    assert [n for n, _ in d.images] == ["prediction", "probe_r0_c0", "diff_r0_c0", "probe_r0_c1", "diff_r0_c1"]
     assert "text_position = suffix" in report and "NOT ESTABLISHED" not in report
 
 
@@ -127,8 +129,8 @@ def test_run_without_edit_image_leaves_source_tokens_unset(fake_comfy):
 
 def test_discovery_node_outputs_report_and_images(fake_comfy):
     from moss_regional_lora.discovery_node import MossLayoutDiscovery
-    out = MossLayoutDiscovery().run(fake_comfy, FakeClip(), FakeVae(), toy.W, toy.H, 42, "a lake", 3, 1.0,
-                                    "euler", "simple", edit_image=edit_image())
+    out = MossLayoutDiscovery().run(fake_comfy, FakeClip(), FakeVae(), toy.W, toy.H, 42, "a lake",
+                                    edit_image=edit_image())
     report, images = out["result"]
     assert "text_position = suffix" in report and "source_tokens = end" in report
     assert images.shape == (5, toy.H, toy.W, 3)
@@ -137,7 +139,7 @@ def test_discovery_node_outputs_report_and_images(fake_comfy):
 
 def test_discovery_node_reports_errors_instead_of_crashing(fake_comfy):
     from moss_regional_lora.discovery_node import MossLayoutDiscovery
-    out = MossLayoutDiscovery().run(fake_comfy, FakeClip(), FakeVae(), toy.W, toy.H, 42, "a lake", 3, 1.0,
-                                    "euler", "simple", blocks="does_not_exist_but_is_a_path.x")
+    out = MossLayoutDiscovery().run(fake_comfy, FakeClip(), FakeVae(), toy.W, toy.H, 42, "a lake",
+                                    blocks="does_not_exist_but_is_a_path.x")
     report = out["result"][0]
     assert "ERROR" in report and "Block lists found: blocks" in report

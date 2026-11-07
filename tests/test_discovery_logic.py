@@ -41,31 +41,62 @@ def test_text_position_inconclusive_when_image_tokens_differ():
     assert pos is None
 
 
+def _sequences(text_position, src_pos, n_text_a=9, n_text_b=40, n_src=12, text_shift=0.25):
+    """Block-0 inputs: without a source image (prompt A), and with one (prompts A and B).
+    With a source image the text tokens change (``text_shift``), as MOSS-Image's shifted text position
+    encodings do; image and source tokens never depend on the prompt."""
+    img = torch.randn(N_IMG, D, generator=torch.Generator().manual_seed(1))
+    src = torch.randn(n_src, D, generator=torch.Generator().manual_seed(4))
+    txt_a, txt_b = prompt_tokens(n_text_a, 2), prompt_tokens(n_text_b, 3)
+
+    def build(txt, with_src):
+        first, second = (txt, img) if text_position == "prefix" else (img, txt)
+        if not with_src:
+            return torch.cat([first, second])
+        txt2 = txt + text_shift
+        first, second = (txt2, img) if text_position == "prefix" else (img, txt2)
+        parts = ([src] if src_pos == "start" else []) + [first] + ([src] if src_pos == "between" else []) + \
+                [second] + ([src] if src_pos == "end" else [])
+        return torch.cat(parts)
+
+    return build(txt_a, False), build(txt_a, True), build(txt_b, True), img, n_text_a, n_src
+
+
+def _decide(text_position, without, with_a, with_b, img, n_text, n_src):
+    img_start = 0 if text_position == "suffix" else n_text
+    image_block = without[img_start:img_start + N_IMG]
+    offset = disc.find_block(with_a, image_block, [0, n_text, n_src, n_text + n_src, N_IMG, N_IMG + n_src])
+    pre, suf = disc.identical_runs(with_a, with_b)
+    return disc.decide_source_position(without.shape[0], with_a.shape[0], n_src, N_IMG, n_text, offset,
+                                       (pre, with_a.shape[0] - suf))
+
+
 @pytest.mark.parametrize("text_position", ["prefix", "suffix"])
 @pytest.mark.parametrize("src_pos", ["start", "between", "end"])
-def test_source_position_is_recovered(text_position, src_pos):
-    n_text = 9
-    img = torch.randn(N_IMG, D, generator=torch.Generator().manual_seed(1))
-    txt = prompt_tokens(n_text, 2)
-    src = torch.randn(12, D, generator=torch.Generator().manual_seed(4))
-    first, second = (txt, img) if text_position == "prefix" else (img, txt)
-    without = torch.cat([first, second])
-    parts = ([src] if src_pos == "start" else []) + [first] + ([src] if src_pos == "between" else []) + [second] + \
-            ([src] if src_pos == "end" else [])
-    with_src = torch.cat(parts)
-    pre, suf = disc.identical_runs(without, with_src)
-    pos, notes = disc.decide_source_position(without.shape[0], with_src.shape[0], 12, pre, suf, N_IMG, n_text,
-                                             text_position)
+@pytest.mark.parametrize("text_shift", [0.0, 0.25], ids=["text-unchanged", "text-shifted"])
+def test_source_position_is_recovered(text_position, src_pos, text_shift):
+    without, with_a, with_b, img, n_text, n_src = _sequences(text_position, src_pos, text_shift=text_shift)
+    pos, notes = _decide(text_position, without, with_a, with_b, img, n_text, n_src)
     assert pos == src_pos, notes
     # and the node's own layout agrees on where the image block is in the with-source sequence
-    lay = Layout(text_position, "raster", pos)
-    s = lay.image_start(n_text, 12)
-    assert torch.equal(with_src[s:s + N_IMG], img)
+    s = Layout(text_position, "raster", pos).image_start(n_text, n_src)
+    assert torch.equal(with_a[s:s + N_IMG], img)
+
+
+def test_regression_moss_edit_report():
+    """The first real report: suffix layout, source appended after the text, text tokens changed by the
+    source image. The old comparison (with vs. without source, same prompt) found only the image
+    identical and gave up; the prompt-swap comparison resolves it."""
+    without, with_a, with_b, img, n_text, n_src = _sequences("suffix", "end", text_shift=0.25)
+    pre_old, suf_old = disc.identical_runs(without, with_a)
+    assert (pre_old, suf_old) == (N_IMG, 0)          # what the report showed: 4096 leading, 0 trailing
+    assert _decide("suffix", without, with_a, with_b, img, n_text, n_src)[0] == "end"
 
 
 def test_source_none_and_count_mismatch():
-    assert disc.decide_source_position(25, 25, 12, 25, 25, N_IMG, 9, "prefix")[0] == "none"
-    assert disc.decide_source_position(25, 40, 12, 25, 0, N_IMG, 9, "prefix")[0] is None
+    assert disc.decide_source_position(25, 25, 12, N_IMG, 9, None, None)[0] == "none"
+    assert disc.decide_source_position(25, 40, 12, N_IMG, 9, 0, (16, 25))[0] is None      # 15 added, 12 expected
+    assert disc.decide_source_position(25, 37, 12, N_IMG, 9, None, (16, 25))[0] is None   # image block not found
 
 
 def test_combine_source_positions():
