@@ -112,12 +112,13 @@ text.
 
 - **Tools** (floating at the top left of the canvas): **Select** (V) clicks, moves and resizes boxes; clicking the background deselects.
   **Box** (B) draws a new box, then switches back to Select with the new box selected.
-- **Layers**: one row per box, with visibility, colour, name, badges (`2L` = two LoRAs, `✎` = in the
-  layout prompt, ⚠ = extends past the canvas), lock and ▲ / ▼. Click a row to select the box.
+- **Layers**: one row per box, with colour, name, badges (`2L` = two LoRAs, `✎` = in the
+  layout prompt, ⚠ = extends past the canvas), then the visibility (eye) and lock toggles and
+  move up / down. Click a row to select the box.
   **+ Group** makes a group (with the selected boxes in it); group headers collapse, rename, show all,
   hide all, move and delete all.
 - **Canvas**: the output canvas with a grid (a third of the canvas by default) and the centre lines.
-- **Properties** (right): for the selected box, its name, colour, visibility, lock, box coordinates
+- **Properties** (right): for the selected box, its name, colour, lock, box coordinates
   (editable), group, layout-prompt fields, and its **LoRA list**. With nothing selected it shows the
   canvas settings: grid, snap, and an optional reference image from ComfyUI's `input` folder with an
   opacity slider (a drawing aid only).

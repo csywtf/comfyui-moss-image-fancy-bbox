@@ -913,12 +913,12 @@ class RegionEditor {
     };
     const row = el("div", { class: `mrl-row${this.selected.has(id) ? " sel" : ""}${inGroup ? " in-group" : ""}${r.visible === false ? " hidden-row" : ""}` }, [
       grip,
-      vis,
       el("span", { class: "mrl-chip", style: `background:${S.regionColor(s, i)}` }),
       el("span", { class: "mrl-name", text: r.name || r.id, title: r.name || r.id }),
       oob ? el("span", { class: "mrl-oob", icon: "triangle-alert", title: "Extends beyond the canvas: those parts cover no tokens" }) : null,
       nLoras ? el("span", { class: "mrl-badge", icon: "layers", iconSize: 11, text: String(nLoras), title: `${nLoras} LoRA(s)` }) : null,
       S.hasPrompt(r) ? el("span", { class: "mrl-badge", icon: "type", iconSize: 11, title: "In the layout prompt" }) : null,
+      vis,
       el("button", { icon: r.locked ? "lock" : "lock-open", class: `mrl-mini${r.locked ? "" : " mrl-toggle-off"}`, title: r.locked ? "Locked: click to unlock" : "Lock (no moving or resizing on the canvas)", onclick: stop(() => this.commit(S.updateRegion(this.state, id, { locked: !r.locked }))) }),
       el("button", { icon: "chevron-up", class: "mrl-mini", title: "Move up (drawn earlier)", onclick: stop(() => this.commit(S.moveRegion(this.state, id, -1))) }),
       el("button", { icon: "chevron-down", class: "mrl-mini", title: "Move down (drawn later)", onclick: stop(() => this.commit(S.moveRegion(this.state, id, +1))) }),
@@ -1025,9 +1025,6 @@ class RegionEditor {
     name.addEventListener("change", () => upd({ name: name.value }));
     const color = el("input", { type: "color", value: S.regionColor(this.state, i), title: "Layer colour" });
     color.addEventListener("change", () => upd({ color: color.value }));
-    const vis = el("input", { type: "checkbox" });
-    vis.checked = r.visible !== false;
-    vis.addEventListener("change", () => upd({ visible: vis.checked }));
     const lock = el("input", { type: "checkbox" });
     lock.checked = !!r.locked;
     lock.addEventListener("change", () => upd({ locked: lock.checked }));
@@ -1062,7 +1059,7 @@ class RegionEditor {
         }),
       ]),
       this.field("Name", name),
-      el("div", { class: "mrl-field" }, [el("span", { text: "Colour" }), color, el("label", {}, [vis, " visible"]), el("label", {}, [lock, " locked"])]),
+      el("div", { class: "mrl-field" }, [el("span", { text: "Colour" }), color, el("label", {}, [lock, " locked"])]),
       el("div", { class: "mrl-hint", text: "bbox [y_min, x_min, y_max, x_max], px from the canvas centre (y down)" }),
       el(
         "div",
