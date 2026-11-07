@@ -1,9 +1,11 @@
-// In-node region editor for "MOSS-Image Regional LoRA" (spec section 8).
+// In-node region editor for "MOSS-Image Regional LoRA + Layout Prompt" (spec section 8).
+//
+//   [layers] [ [tools]      canvas        ] [properties]     (the toolbar floats over the canvas)
 //
 // The node's `regions` STRING widget holds the JSON and is the only source of truth (8.1c, 8.2a).
 // This editor is a view over it: it parses the text, draws it, and writes the serialised result back
-// after each edit. It never keeps state the JSON does not have, and it never writes while the JSON
-// fails to parse (8.9a).
+// after each edit. It never keeps state the JSON does not have (selection and the active tool are
+// view state), and it never writes while the JSON fails to parse (8.9a).
 
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
@@ -11,80 +13,127 @@ import * as G from "./geometry.js";
 import * as S from "./state.js";
 import * as C from "./curve.js";
 import { CurvePanel, drawSparkline } from "./curve_panel.js";
+import { icon } from "./icons.js";
 
 const NODE_NAME = "MossRegionalLora";
 const POLL_MS = 250;
 const HANDLE_PX = 7; // half-size of a resize handle, in screen px
 const MIN_CREATE_PX = 3; // drags shorter than this (image px) are clicks, not creates
 
+// Tools in the floating toolbar. Add new ones here: {id, icon (a name in icons.js), key, title}.
+const TOOLS = [
+  { id: "select", icon: "mouse-pointer-2", key: "v", title: "Select (V): click to select, drag a box to move it, drag a handle to resize. Click the background to deselect." },
+  { id: "box", icon: "square", key: "b", title: "Box (B): drag to draw a new box. Shift: square, Alt: from the centre." },
+];
+
 const CSS = `
 .mrl-root{display:flex;flex-direction:column;gap:4px;width:100%;height:100%;box-sizing:border-box;font:12px sans-serif;color:var(--input-text,#ddd);outline:none}
-.mrl-bar{display:flex;flex-wrap:wrap;align-items:center;gap:6px}
-.mrl-bar input[type=number]{width:44px}
-.mrl-bar button,.mrl-row button,.mrl-group button{background:var(--comfy-input-bg,#222);color:inherit;border:1px solid var(--border-color,#555);border-radius:3px;padding:0 5px;cursor:pointer;line-height:18px}
-.mrl-bar button:disabled{opacity:.4;cursor:default}
+.mrl-root{color-scheme:dark;accent-color:#3a6ea5}
+.mrl-root input[type=text],.mrl-root input[type=number],.mrl-root select,.mrl-root textarea{background:var(--comfy-input-bg,#222);color:var(--input-text,#ddd);border:1px solid var(--border-color,#555);border-radius:3px;padding:2px 5px;font:12px sans-serif;box-sizing:border-box;outline:none}
+.mrl-root input[type=text]:focus,.mrl-root input[type=number]:focus,.mrl-root select:focus,.mrl-root textarea:focus{border-color:#6af}
+.mrl-root input::placeholder,.mrl-root textarea::placeholder{color:var(--descrip-text,#888)}
+.mrl-root input[type=color]{background:transparent;border:1px solid var(--border-color,#555);border-radius:3px;padding:1px;cursor:pointer}
+.mrl-top{display:flex;flex-wrap:wrap;align-items:center;gap:6px}
+.mrl-top button,.mrl-root button{background:var(--comfy-input-bg,#222);color:inherit;border:1px solid var(--border-color,#555);border-radius:3px;padding:0 5px;cursor:pointer;line-height:18px}
+.mrl-root button:disabled{opacity:.4;cursor:default}
+.mrl-root button{display:inline-flex;align-items:center;justify-content:center;gap:3px}
+.mrl-icon{display:block;flex:0 0 auto}
+.mrl-mini{min-width:18px;height:20px;padding:0 3px!important}
+.mrl-layers .mrl-mini:not(.mrl-has-text){background:transparent!important;border-color:transparent!important;padding:0 1px!important;min-width:18px}
+.mrl-layers .mrl-mini:not(.mrl-has-text):hover{background:rgba(128,128,128,.25)!important}
+.mrl-row,.mrl-group{gap:2px!important}
+.mrl-toggle-off{opacity:.45}
 .mrl-dims{font-weight:bold}
-.mrl-readout{font-family:monospace;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.mrl-readout{font-family:monospace;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:1;min-width:0}
 .mrl-error{display:none;background:#5a1d1d;border:1px solid #c44;padding:4px 6px;border-radius:3px;white-space:pre-wrap}
 .mrl-warn{display:none;background:#4a3d12;border:1px solid #a83;padding:2px 6px;border-radius:3px}
-.mrl-canvas-wrap{position:relative;flex:1 1 auto;min-height:160px;overflow:hidden}
+.mrl-main{display:flex;flex:1 1 auto;min-height:0;gap:4px}
+.mrl-tools{position:absolute;left:8px;top:8px;z-index:2;display:flex;flex-direction:column;gap:3px;padding:4px;background:rgba(30,30,30,.92);border:1px solid var(--border-color,#555);border-radius:6px;box-shadow:0 2px 10px rgba(0,0,0,.45)}
+.mrl-tools button{width:30px;height:30px;padding:0}
+.mrl-tools button.on{background:#3a6ea5;border-color:#6af}
+.mrl-panel{display:flex;flex-direction:column;min-height:0;border:1px solid var(--border-color,#444);border-radius:3px;background:rgba(0,0,0,.15)}
+.mrl-panel-head{display:flex;align-items:center;gap:4px;padding:3px 5px;font-weight:bold;border-bottom:1px solid rgba(128,128,128,.3)}
+.mrl-panel-head .grow{flex:1}
+.mrl-panel-body{overflow:auto;flex:1 1 auto;min-height:0}
+.mrl-layers{flex:0 0 260px;width:260px;min-width:0}
+.mrl-props{flex:0 0 300px;width:300px;min-width:0}
+.mrl-root button{white-space:nowrap}
+.mrl-canvas-wrap{position:relative;flex:1 1 auto;min-width:120px;min-height:160px;overflow:hidden}
 .mrl-canvas-wrap canvas{position:absolute;left:0;top:0;outline:none}
-.mrl-list{flex:0 0 auto;max-height:38%;overflow:auto;border:1px solid var(--border-color,#444);border-radius:3px}
-.mrl-row,.mrl-group{display:flex;align-items:center;gap:4px;padding:2px 4px;border-bottom:1px solid rgba(128,128,128,.2)}
-.mrl-row.sel{background:rgba(80,140,255,.25)}
-.mrl-row.in-group{padding-left:18px}
-.mrl-row.hidden-row{opacity:.5}
+.mrl-row,.mrl-group{display:flex;align-items:center;gap:4px;padding:2px 4px;border-bottom:1px solid rgba(128,128,128,.2);cursor:default;user-select:none}
+.mrl-row:hover{background:rgba(128,128,128,.12)}
+.mrl-row.sel{background:rgba(80,140,255,.28)}
+.mrl-row.in-group{padding-left:16px}
+.mrl-row.hidden-row .mrl-name{opacity:.5}
 .mrl-row.drop-before,.mrl-group.drop-before{box-shadow:inset 0 2px 0 #6af}
 .mrl-group{background:rgba(128,128,128,.15);font-weight:bold}
-.mrl-row input[type=text],.mrl-group input[type=text]{width:84px;background:transparent;color:inherit;border:1px solid transparent}
-.mrl-row input[type=text]:focus,.mrl-group input[type=text]:focus{border-color:#888}
-.mrl-row input[type=number]{width:48px}
-.mrl-row select{max-width:150px}
-.mrl-row input[type=color]{width:18px;height:16px;padding:0;border:none;background:none}
-.mrl-grip{cursor:grab;user-select:none;opacity:.7}
-.mrl-bbox{font-family:monospace;font-size:11px;opacity:.85;min-width:130px}
-.mrl-oob{color:#fb4}
-.mrl-status{opacity:.85}
-.mrl-curve{flex:0 0 auto;display:flex;flex-direction:column;gap:2px}
-.mrl-curve-bar{display:flex;flex-wrap:wrap;align-items:center;gap:4px}
-.mrl-curve-bar button{background:var(--comfy-input-bg,#222);color:inherit;border:1px solid var(--border-color,#555);border-radius:3px;padding:0 5px;cursor:pointer;line-height:18px}
-.mrl-curve-bar button:disabled{opacity:.4;cursor:default}
+.mrl-group input[type=text]{flex:1;min-width:40px;width:60px;background:transparent;color:inherit;border:1px solid transparent;font-weight:bold}
+.mrl-group input[type=text]:focus{border-color:#888}
+.mrl-chip{width:10px;height:10px;border-radius:2px;flex:0 0 10px}
+.mrl-name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.mrl-badge{font-size:10px;padding:1px 3px;border-radius:3px;background:rgba(128,128,128,.3);display:inline-flex;align-items:center;gap:2px}
+.mrl-oob{color:#fb4;display:inline-flex;align-items:center;gap:3px}
+.mrl-grip{cursor:grab;opacity:.6;display:inline-flex}
+.mrl-mini{padding:0 3px!important;line-height:16px!important;font-size:10px}
+.mrl-sec{padding:5px 6px;border-bottom:1px solid rgba(128,128,128,.25);display:flex;flex-direction:column;gap:4px}
+.mrl-sec-title{font-weight:bold;opacity:.85;display:flex;align-items:center;gap:6px}
+.mrl-sec-title .grow{flex:1}
+.mrl-field{display:flex;align-items:center;gap:4px}
+.mrl-field>span:first-child{flex:0 0 62px;opacity:.75}
+.mrl-field input[type=text],.mrl-field select,.mrl-props textarea{flex:1;min-width:0;background:var(--comfy-input-bg,#222);color:inherit;border:1px solid var(--border-color,#555);border-radius:3px}
+.mrl-props textarea{min-height:44px;resize:vertical;font:12px sans-serif}
+.mrl-bbox-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:3px}
+.mrl-bbox-grid label{display:flex;flex-direction:column;font-size:10px;opacity:.85}
+.mrl-bbox-grid input{width:100%;box-sizing:border-box}
+.mrl-hint{opacity:.65;font-size:11px}
+.mrl-lora{border:1px solid rgba(128,128,128,.3);border-radius:3px;padding:3px;display:flex;flex-direction:column;gap:3px}
+.mrl-lora.open{border-color:#6af}
+.mrl-lora-row{display:flex;align-items:center;gap:4px}
+.mrl-lora-name{flex:1;min-width:0;justify-content:space-between!important}
+.mrl-lora-label{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+.mrl-lora-row input[type=number]{width:54px}
+.mrl-spark{cursor:pointer;flex:0 0 auto;border-radius:2px}
+.mrl-spark.open{outline:1px solid #6af}
+.mrl-picker{position:fixed;z-index:10000;background:var(--comfy-menu-bg,#1e1e1e);border:1px solid #6af;border-radius:4px;box-shadow:0 4px 16px rgba(0,0,0,.5);display:flex;flex-direction:column;max-height:300px;width:320px;font:12px sans-serif;color:var(--input-text,#ddd)}
+.mrl-picker input{margin:4px;background:var(--comfy-input-bg,#222);color:inherit;border:1px solid #555;border-radius:3px;padding:2px 4px}
+.mrl-picker-list{overflow:auto}
+.mrl-picker-item{padding:2px 8px;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.mrl-picker-item:hover,.mrl-picker-item.cur{background:rgba(80,140,255,.3)}
+.mrl-curve{display:flex;flex-direction:column;gap:2px}
+.mrl-curve-bar{display:flex;flex-wrap:wrap;align-items:center;gap:3px}
+.mrl-curve-bar button{font-size:11px;padding:0 4px}
 .mrl-curve-bar button.on{background:#a63;border-color:#c84}
-.mrl-curve-title{font-weight:bold;margin-right:4px}
-.mrl-curve-readout{margin-left:auto;font-family:monospace;opacity:.85}
-.mrl-sep{width:8px}
+.mrl-curve-title{display:none}
+.mrl-curve-readout{flex-basis:100%;font-family:monospace;opacity:.85;font-size:11px;min-height:14px}
+.mrl-sep{width:4px}
 .mrl-curve-wrap{position:relative;height:120px}
 .mrl-curve-wrap canvas{position:absolute;left:0;top:0;outline:none}
-.mrl-spark{cursor:pointer;vertical-align:middle}
-.mrl-item{border-bottom:1px solid rgba(128,128,128,.2)}
-.mrl-item .mrl-row{border-bottom:none}
-.mrl-prompt{display:flex;align-items:center;gap:4px;padding:0 4px 3px 26px}
-.mrl-prompt.in-group{padding-left:40px}
-.mrl-prompt.sel{background:rgba(80,140,255,.25)}
-.mrl-prompt input.mrl-caption{flex:1 1 auto;min-width:80px}
-.mrl-prompt input.mrl-render{width:110px}
-.mrl-prompt input[type=text]{background:transparent;color:inherit;border:1px solid rgba(128,128,128,.4)}
-.mrl-prompt input[type=color]{width:18px;height:16px;padding:0;border:none;background:none}
-.mrl-swatch{display:inline-flex;align-items:center}
-.mrl-prompt button{background:var(--comfy-input-bg,#222);color:inherit;border:1px solid var(--border-color,#555);border-radius:3px;padding:0 4px;cursor:pointer;line-height:16px;font-size:11px}
+.mrl-status{opacity:.85}
+.mrl-props input[type=color]{width:28px;height:20px}
 `;
 
 function injectCss() {
-  if (document.getElementById("mrl-css")) return;
-  const s = document.createElement("style");
-  s.id = "mrl-css";
+  let s = document.getElementById("mrl-css");
+  if (!s) {
+    s = document.createElement("style");
+    s.id = "mrl-css";
+    document.head.appendChild(s);
+  }
   s.textContent = CSS;
-  document.head.appendChild(s);
 }
 
+// attrs.icon: a Lucide icon name, placed before attrs.text (an icon-only control needs a title)
 function el(tag, attrs = {}, children = []) {
   const e = document.createElement(tag);
   for (const [k, v] of Object.entries(attrs)) {
     if (k === "class") e.className = v;
-    else if (k === "text") e.textContent = v;
+    else if (k === "text" || k === "icon") continue;
     else if (k.startsWith("on")) e.addEventListener(k.slice(2), v);
     else if (v !== undefined && v !== null) e.setAttribute(k, v);
   }
+  if (attrs.icon) e.appendChild(icon(attrs.icon, attrs.iconSize || 14));
+  if (attrs.text !== undefined && attrs.text !== null) e.appendChild(document.createTextNode(attrs.text));
+  if (attrs.icon && attrs.text) e.classList.add("mrl-has-text");
   for (const c of [].concat(children)) if (c) e.appendChild(typeof c === "string" ? document.createTextNode(c) : c);
   return e;
 }
@@ -94,6 +143,13 @@ function hexToRgba(hex, a) {
   if (!m) return `rgba(200,200,200,${a})`;
   const n = parseInt(m[1], 16);
   return `rgba(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255},${a})`;
+}
+
+/** File name without folders or extension, for display ("MOSS Image\\concept\\x.safetensors" -> "x"). */
+export function loraDisplayName(path) {
+  if (!path) return "(choose a LoRA)";
+  const base = String(path).split(/[\\/]/).pop();
+  return base.replace(/\.(safetensors|ckpt|pt|bin|pth)$/i, "");
 }
 
 const loraListPromise = { p: null };
@@ -131,8 +187,10 @@ class RegionEditor {
     this.lastDims = "";
     this.selected = new Set();
     this.primary = null;
+    this.tool = "select";
     this.drag = null;
     this.preview = null; // {id, bbox} during a drag, or {create: rect}
+    this.expanded = null; // {id, index}: LoRA entry whose curve is open in the properties panel
     this.refImg = null;
     this.refName = null;
     this.refState = "none"; // none | loading | ok | missing
@@ -141,7 +199,6 @@ class RegionEditor {
     this.buildDom();
     loraList().then((l) => {
       this.loras = l;
-      this.renderList();
     });
     this.syncFromWidget(true);
     this.timer = setInterval(() => this.poll(), POLL_MS);
@@ -153,72 +210,59 @@ class RegionEditor {
     clearInterval(this.timer);
     this.ro?.disconnect();
     this.curvePanel?.destroy();
+    this.closePicker();
   }
 
   // ------------------------------------------------------------------ DOM
   buildDom() {
     injectCss();
     this.dims = el("span", { class: "mrl-dims" });
-    this.gridInput = el("input", { type: "number", min: "1", max: "32", step: "1", title: "Grid divisions per side" });
-    this.gridInput.addEventListener("change", () => this.setEditor({ grid_divisions: Math.max(1, parseInt(this.gridInput.value) || 3) }));
-    this.snapInput = el("input", { type: "checkbox", title: "Snap to grid while dragging (hold Ctrl/Cmd to bypass)" });
-    this.snapInput.addEventListener("change", () => this.setEditor({ snap: this.snapInput.checked }));
-    this.undoBtn = el("button", { text: "Undo", title: "Ctrl/Cmd+Z", onclick: () => this.undo() });
-    this.redoBtn = el("button", { text: "Redo", title: "Ctrl/Cmd+Shift+Z", onclick: () => this.redo() });
-    const addGroupBtn = el("button", { text: "+ Group", onclick: () => this.addGroup() });
-    this.refInput = el("input", { type: "text", list: "", placeholder: "reference image (input/)", style: "width:130px" });
-    this.refList = el("datalist", { id: `mrl-ref-${Math.random().toString(36).slice(2)}` });
-    this.refInput.setAttribute("list", this.refList.id);
-    this.refInput.addEventListener("focus", () =>
-      inputFileList().then((files) => {
-        this.refList.replaceChildren(...files.map((f) => el("option", { value: f })));
-      }),
-    );
-    this.refInput.addEventListener("change", () => this.setEditor({ reference_image: this.refInput.value.trim() }));
-    this.refOpacity = el("input", { type: "range", min: "0", max: "1", step: "0.05", title: "Reference opacity", style: "width:70px" });
-    this.refOpacity.addEventListener("input", () => {
-      this.opacityPreview = parseFloat(this.refOpacity.value);
-      this.draw();
-    });
-    this.refOpacity.addEventListener("change", () => {
-      this.opacityPreview = null;
-      this.setEditor({ reference_opacity: parseFloat(this.refOpacity.value) });
-    });
-
-    const bar = el("div", { class: "mrl-bar" }, [
-      this.dims,
-      el("label", {}, ["Grid ÷ ", this.gridInput]),
-      el("label", {}, [this.snapInput, " Snap"]),
-      this.undoBtn,
-      this.redoBtn,
-      addGroupBtn,
-      this.refInput,
-      this.refList,
-      this.refOpacity,
-    ]);
+    this.undoBtn = el("button", { icon: "undo-2", text: "Undo", title: "Undo (Ctrl/Cmd+Z)", onclick: () => this.undo() });
+    this.redoBtn = el("button", { icon: "redo-2", text: "Redo", title: "Redo (Ctrl/Cmd+Shift+Z)", onclick: () => this.redo() });
     this.readout = el("div", { class: "mrl-readout" });
+    const top = el("div", { class: "mrl-top" }, [this.dims, this.undoBtn, this.redoBtn, this.readout]);
     this.errorBox = el("div", { class: "mrl-error" });
     this.warnBox = el("div", { class: "mrl-warn" });
+
+    this.toolButtons = {};
+    const tools = el(
+      "div",
+      { class: "mrl-tools" },
+      TOOLS.map((t) => (this.toolButtons[t.id] = el("button", { icon: t.icon, iconSize: 16, title: t.title, onclick: () => this.setTool(t.id) }))),
+    );
+
+    this.list = el("div", { class: "mrl-panel-body" });
+    const layers = el("div", { class: "mrl-panel mrl-layers" }, [
+      el("div", { class: "mrl-panel-head" }, [
+        el("span", { class: "grow", text: "Layers" }),
+        el("button", { icon: "folder-plus", text: "Group", class: "mrl-mini", title: "New group (puts the selected boxes in it)", onclick: () => this.addGroup() }),
+      ]),
+      this.list,
+    ]);
+
     this.canvas = el("canvas", { tabindex: "0" });
-    this.wrap = el("div", { class: "mrl-canvas-wrap" }, [this.canvas]);
-    this.list = el("div", { class: "mrl-list" });
-    this.statusLine = el("div", { class: "mrl-status" });
+    // the toolbar floats over the left edge of the canvas
+    this.wrap = el("div", { class: "mrl-canvas-wrap" }, [this.canvas, tools]);
+
+    this.propsTitle = el("span", { class: "grow" });
+    this.props = el("div", { class: "mrl-panel-body" });
+    const props = el("div", { class: "mrl-panel mrl-props" }, [el("div", { class: "mrl-panel-head" }, [this.propsTitle]), this.props]);
+
     this.curvePanel = new CurvePanel({
-      region: () => this.region(this.primary),
+      target: () => this.expandedEntry(),
       legacy: () => this.legacyCurve(),
       readOnly: () => !!this.parseError,
       snap: () => !!this.state.editor?.snap,
-      color: (r) => (r ? S.regionColor(this.state, this.state.regions.indexOf(r)) : null),
-      commitCurve: (points) => this.primary && this.commit(S.updateRegion(this.state, this.primary, { curve: points })),
+      color: () => (this.primary ? S.regionColor(this.state, this.state.regions.findIndex((r) => r.id === this.primary)) : null),
+      commitCurve: (points) => this.updateExpandedEntry({ curve: points }),
     });
+
+    this.statusLine = el("div", { class: "mrl-status" });
     this.root = el("div", { class: "mrl-root", tabindex: "-1" }, [
-      bar,
-      this.readout,
+      top,
       this.errorBox,
       this.warnBox,
-      this.wrap,
-      this.curvePanel.root,
-      this.list,
+      el("div", { class: "mrl-main" }, [layers, this.wrap, props]),
       this.statusLine,
     ]);
 
@@ -262,7 +306,7 @@ class RegionEditor {
     }
   }
 
-  syncFromWidget(initial) {
+  syncFromWidget() {
     const t = this.text;
     this.lastText = t;
     const res = S.parseState(t);
@@ -283,6 +327,7 @@ class RegionEditor {
   commit(newState) {
     if (this.parseError) return false;
     const before = this.text;
+    newState.version = Math.max(Number.isInteger(newState.version) ? newState.version : 0, S.SCHEMA_VERSION);
     const text = S.serializeState(newState);
     if (text === before) return false;
     this.history.record(before);
@@ -304,7 +349,7 @@ class RegionEditor {
     const t = this.history.undo(this.text);
     if (t == null) return;
     this.writeText(t);
-    this.syncFromWidget(false);
+    this.syncFromWidget();
   }
 
   redo() {
@@ -312,7 +357,7 @@ class RegionEditor {
     const t = this.history.redo(this.text);
     if (t == null) return;
     this.writeText(t);
-    this.syncFromWidget(false);
+    this.syncFromWidget();
   }
 
   setEditor(patch) {
@@ -351,6 +396,20 @@ class RegionEditor {
     return { p: G.screenToImage({ x: px, y: py }, v.scale || 1), v };
   }
 
+  /** The node-level ramp (for LoRA entries without their own curve), from the ramp widgets. */
+  legacyCurve() {
+    const rs = Number(this.wRampStart?.value ?? 0.15);
+    const re = Number(this.wRampEnd?.value ?? 1);
+    return C.legacyRamp(Number.isFinite(rs) ? rs : 0.15, Number.isFinite(re) ? re : 1);
+  }
+
+  entryCurve(entry) {
+    try {
+      if (Array.isArray(entry.curve) && entry.curve.length) return { points: C.normalize(entry.curve), own: true };
+    } catch {}
+    return { points: C.normalize(this.legacyCurve()), own: false };
+  }
+
   select(id, additive) {
     if (id == null) {
       if (!additive) {
@@ -369,7 +428,14 @@ class RegionEditor {
       this.selected = new Set([id]);
       this.primary = id;
     }
+    if (this.expanded && this.expanded.id !== this.primary) this.expanded = null;
     this.renderAll();
+  }
+
+  setTool(id) {
+    this.tool = id;
+    this.renderTools();
+    this.canvas.style.cursor = id === "box" ? "crosshair" : "default";
   }
 
   // ------------------------------------------------------------------ pointer interaction (8.4a)
@@ -377,8 +443,14 @@ class RegionEditor {
     if (e.button !== 0) return;
     e.stopPropagation();
     this.canvas.focus();
+    this.closePicker();
     if (this.parseError) return;
     const { p, v } = this.eventPoint(e);
+    if (this.tool === "box") {
+      this.drag = { kind: "create", start: G.clampPoint(p, v.W, v.H) };
+      this.canvas.setPointerCapture(e.pointerId);
+      return;
+    }
     const additive = e.shiftKey || e.ctrlKey || e.metaKey;
     const tol = HANDLE_PX / (v.scale || 1);
     const prim = this.region(this.primary);
@@ -405,10 +477,8 @@ class RegionEditor {
       }
       return;
     }
+    // background: deselect
     if (!additive) this.select(null, false);
-    const start = G.clampPoint(p, v.W, v.H);
-    this.drag = { kind: "create", start };
-    this.canvas.setPointerCapture(e.pointerId);
   }
 
   snapOn(e) {
@@ -460,6 +530,8 @@ class RegionEditor {
         const { state, id } = S.addRegion(this.state, G.canvasToCentered(pv.create, W, H));
         this.selected = new Set([id]);
         this.primary = id;
+        this.expanded = null;
+        this.setTool("select"); // drawn: back to Select, with the new box selected
         this.commit(state);
         return;
       }
@@ -477,13 +549,17 @@ class RegionEditor {
   }
 
   updateCursor(p, v) {
-    let cursor = "crosshair";
+    if (this.tool === "box") {
+      this.canvas.style.cursor = "crosshair";
+      return;
+    }
+    let cursor = "default";
     const prim = this.region(this.primary);
     if (prim && prim.visible !== false && !prim.locked) {
       const h = G.handleAt(this.rectOf(prim), p, HANDLE_PX / (v.scale || 1));
       if (h) cursor = G.cursorFor(h);
     }
-    if (cursor === "crosshair") {
+    if (cursor === "default") {
       const rects = this.state.regions.map((r) => (r.visible === false ? null : this.rectOf(r)));
       const hit = G.hitTest(rects, p);
       if (hit >= 0) cursor = this.state.regions[hit].locked ? "not-allowed" : "move";
@@ -511,8 +587,24 @@ class RegionEditor {
       return;
     }
     if (inField) {
-      e.stopPropagation(); // typing in a row field must not trigger graph shortcuts
+      e.stopPropagation(); // typing in a field must not trigger graph shortcuts
       return;
+    }
+    if (e.key === "Escape") {
+      e.stopPropagation();
+      if (this.drag) this.cancelDrag();
+      else if (this.tool !== "select") this.setTool("select");
+      else this.select(null, false);
+      return;
+    }
+    if (!mod && !e.altKey) {
+      const tool = TOOLS.find((t) => t.key === e.key.toLowerCase());
+      if (tool) {
+        e.preventDefault();
+        e.stopPropagation();
+        this.setTool(tool.id);
+        return;
+      }
     }
     if (e.key.startsWith("Arrow")) {
       e.preventDefault();
@@ -531,39 +623,27 @@ class RegionEditor {
       if (!ids.length) return;
       this.selected.clear();
       this.primary = null;
+      this.expanded = null;
       this.commit(S.deleteRegions(this.state, ids));
     }
   }
 
   // ------------------------------------------------------------------ rendering
-  /** The node-level ramp (for boxes without their own curve), from the ramp_start/ramp_end widgets. */
-  legacyCurve() {
-    const rs = Number(this.wRampStart?.value ?? 0.15);
-    const re = Number(this.wRampEnd?.value ?? 1);
-    return C.legacyRamp(Number.isFinite(rs) ? rs : 0.15, Number.isFinite(re) ? re : 1);
-  }
-
   renderAll() {
-    this.renderBar();
+    this.renderTop();
+    this.renderTools();
     this.renderReadout();
-    this.curvePanel.render();
     this.renderList();
+    this.renderProps();
     this.loadReference();
     this.draw();
   }
 
-  renderBar() {
+  renderTop() {
     const { W, H } = this.canvasSize();
     this.dims.textContent = `${W} × ${H} px`;
-    const ed = this.state.editor || {};
-    if (document.activeElement !== this.gridInput) this.gridInput.value = ed.grid_divisions ?? 3;
-    this.snapInput.checked = !!ed.snap;
-    if (document.activeElement !== this.refInput) this.refInput.value = ed.reference_image || "";
-    if (this.opacityPreview == null) this.refOpacity.value = ed.reference_opacity ?? 0.5;
     this.undoBtn.disabled = !this.history.canUndo || !!this.parseError;
     this.redoBtn.disabled = !this.history.canRedo || !!this.parseError;
-    const disabled = !!this.parseError;
-    for (const x of [this.gridInput, this.snapInput, this.refInput, this.refOpacity]) x.disabled = disabled;
     if (this.parseError) {
       this.errorBox.style.display = "block";
       this.errorBox.textContent =
@@ -579,11 +659,15 @@ class RegionEditor {
     this.statusLine.textContent = this.status;
   }
 
+  renderTools() {
+    for (const t of TOOLS) this.toolButtons[t.id].classList.toggle("on", this.tool === t.id);
+  }
+
   renderReadout() {
     const r = this.region(this.primary);
     if (!r) {
       const n = S.emittedRegions(this.state).length;
-      this.readout.textContent = `No selection · ${n} region${n === 1 ? "" : "s"} emitted · drag on the canvas to add one`;
+      this.readout.textContent = `${n} box${n === 1 ? "" : "es"} · ${this.tool === "box" ? "drag on the canvas to draw a box" : "Box tool (B) to draw, Select (V) to edit"}`;
       return;
     }
     const bbox = this.preview && this.preview.id === r.id ? this.preview.bbox : r.bbox;
@@ -635,7 +719,6 @@ class RegionEditor {
     const px = 1 / k; // one css px in image px
     ctx.setTransform(dpr * k, 0, 0, dpr * k, dpr * v.ox, dpr * v.oy);
 
-    // canvas area
     ctx.fillStyle = "#2a2a2a";
     ctx.fillRect(0, 0, v.W, v.H);
     const ed = this.state.editor || {};
@@ -694,8 +777,9 @@ class RegionEditor {
       ctx.setLineDash([]);
       const vis = G.clipRect(rect, v.W, v.H);
       if (vis) {
-        const kind = [r.lora ? "LoRA" : "", S.hasPrompt(r) ? (r.label || "object") : ""].filter(Boolean).join(" + ");
-        const label = `${r.name || r.id}${kind ? ` · ${kind}` : ""}${r.locked ? " 🔒" : ""}`;
+        const n = S.lorasOf(r).filter((e) => e.lora).length;
+        const kind = [n ? `${n} LoRA${n > 1 ? "s" : ""}` : "", S.hasPrompt(r) ? r.label || "object" : ""].filter(Boolean).join(" + ");
+        const label = `${r.name || r.id}${kind ? ` · ${kind}` : ""}${r.locked ? " · locked" : ""}`;
         ctx.font = `${12 * px}px sans-serif`;
         const tw = ctx.measureText(label).width;
         ctx.fillStyle = hexToRgba(col, 0.85);
@@ -714,9 +798,9 @@ class RegionEditor {
     }
     ctx.restore();
 
-    // handles on the primary selection (8.3d); drawn unclipped so off-canvas edges stay grabbable
+    // handles on the primary selection (8.3d), Select tool only; unclipped so off-canvas edges stay grabbable
     const prim = this.region(this.primary);
-    if (prim && prim.visible !== false && !prim.locked) {
+    if (this.tool === "select" && prim && prim.visible !== false && !prim.locked) {
       const hp = G.handlePositions(this.rectOf(prim));
       const s = HANDLE_PX * px;
       ctx.fillStyle = "#fff";
@@ -727,7 +811,6 @@ class RegionEditor {
         ctx.strokeRect(hp[h].x - s / 2, hp[h].y - s / 2, s, s);
       }
     }
-    // canvas border
     ctx.strokeStyle = "rgba(255,255,255,0.6)";
     ctx.lineWidth = px;
     ctx.strokeRect(0, 0, v.W, v.H);
@@ -746,11 +829,12 @@ class RegionEditor {
     for (const u of S.listUnits(s)) {
       if (u.type === "group") {
         rows.push(this.groupHeader(u, ro));
-        if (!u.group.collapsed) for (const i of u.indices) rows.push(this.regionRow(i, true, W, H, ro));
-      } else rows.push(this.regionRow(u.index, false, W, H, ro));
+        if (!u.group.collapsed) for (const i of u.indices) rows.push(this.layerRow(i, true, W, H, ro));
+      } else rows.push(this.layerRow(u.index, false, W, H, ro));
     }
-    if (!rows.length) rows.push(el("div", { class: "mrl-row", text: "No regions yet. Drag on the canvas to draw one." }));
-    const tail = el("div", { class: "mrl-row", style: "min-height:8px;border:none" });
+    if (!rows.length) rows.push(el("div", { class: "mrl-row mrl-hint", text: "No boxes yet. Pick the Box tool (B) and drag on the canvas." }));
+    const tail = el("div", { class: "mrl-row", style: "min-height:16px;border:none" });
+    tail.addEventListener("click", () => this.select(null, false));
     this.dropTarget(tail, null, undefined);
     rows.push(tail);
     this.list.replaceChildren(...rows);
@@ -778,26 +862,26 @@ class RegionEditor {
     const g = u.group;
     const name = el("input", { type: "text", value: g.name, title: "Rename group" });
     name.addEventListener("change", () => this.commit(S.renameGroup(this.state, g.id, name.value)));
-    const grip = el("span", { class: "mrl-grip", text: "⠿", draggable: ro ? "false" : "true", title: "Drag to reorder the group" });
+    const grip = el("span", { class: "mrl-grip", icon: "grip-vertical", draggable: ro ? "false" : "true", title: "Drag to reorder the group" });
     grip.addEventListener("dragstart", (e) => {
       this.dragItem = { type: "group", id: g.id };
       e.dataTransfer?.setData("text/plain", g.id);
     });
     const row = el("div", { class: "mrl-group" }, [
       grip,
-      el("button", { text: g.collapsed ? "▸" : "▾", title: "Collapse / expand", onclick: () => this.commit(S.setGroupCollapsed(this.state, g.id, !g.collapsed)) }),
+      el("button", { icon: g.collapsed ? "chevron-right" : "chevron-down", class: "mrl-mini", title: "Collapse / expand", onclick: () => this.commit(S.setGroupCollapsed(this.state, g.id, !g.collapsed)) }),
       name,
-      el("span", { text: `(${u.indices.length})` }),
-      el("button", { text: "Show all", onclick: () => this.commit(S.setGroupVisible(this.state, g.id, true)) }),
-      el("button", { text: "Hide all", onclick: () => this.commit(S.setGroupVisible(this.state, g.id, false)) }),
-      el("button", { text: "▲", title: "Move group up", onclick: () => this.commit(S.moveGroup(this.state, g.id, -1)) }),
-      el("button", { text: "▼", title: "Move group down", onclick: () => this.commit(S.moveGroup(this.state, g.id, +1)) }),
+      el("span", { class: "mrl-badge", text: String(u.indices.length) }),
+      el("button", { icon: "eye", class: "mrl-mini", title: "Show all: make every box in the group visible", onclick: () => this.commit(S.setGroupVisible(this.state, g.id, true)) }),
+      el("button", { icon: "eye-off", class: "mrl-mini", title: "Hide all: hide every box in the group", onclick: () => this.commit(S.setGroupVisible(this.state, g.id, false)) }),
+      el("button", { icon: "chevron-up", class: "mrl-mini", title: "Move group up", onclick: () => this.commit(S.moveGroup(this.state, g.id, -1)) }),
+      el("button", { icon: "chevron-down", class: "mrl-mini", title: "Move group down", onclick: () => this.commit(S.moveGroup(this.state, g.id, +1)) }),
       el("button", {
-        text: "Delete all",
-        title: "Delete the group and every region in it",
+        icon: "trash-2",
+        class: "mrl-mini",
+        title: "Delete all: the group and every box in it",
         onclick: () => {
-          if (!u.indices.length || confirm(`Delete group "${g.name}" and its ${u.indices.length} region(s)?`))
-            this.commit(S.deleteGroup(this.state, g.id));
+          if (!u.indices.length || confirm(`Delete group "${g.name}" and its ${u.indices.length} box(es)?`)) this.commit(S.deleteGroup(this.state, g.id));
         },
       }),
     ]);
@@ -807,118 +891,47 @@ class RegionEditor {
     return row;
   }
 
-  regionRow(i, inGroup, W, H, ro) {
+  layerRow(i, inGroup, W, H, ro) {
     const s = this.state;
     const r = s.regions[i];
     const id = r.id;
-    const upd = (patch) => this.commit(S.updateRegion(this.state, id, patch));
     const oob = G.outOfBounds(G.centeredToCanvas(r.bbox, W, H), W, H);
-
-    const vis = el("input", { type: "checkbox", title: "Visible (hidden regions are not emitted)" });
-    vis.checked = r.visible !== false;
-    vis.addEventListener("change", () => upd({ visible: vis.checked }));
-    const color = el("input", { type: "color", value: S.regionColor(s, i), title: "Layer colour" });
-    color.addEventListener("change", () => upd({ color: color.value }));
-    const name = el("input", { type: "text", value: r.name || "", title: "Name" });
-    name.addEventListener("change", () => upd({ name: name.value }));
-    const lora = el("select", { title: "LoRA file" });
-    const opts = ["", ...this.loras];
-    if (r.lora && !opts.includes(r.lora)) opts.push(r.lora);
-    for (const o of opts) lora.appendChild(el("option", { value: o, text: o || "(no LoRA)" }));
-    lora.value = r.lora || "";
-    lora.addEventListener("change", () => upd({ lora: lora.value }));
-    const weight = el("input", { type: "number", step: "0.05", value: String(r.weight ?? 1), title: "Weight" });
-    weight.addEventListener("change", () => {
-      const w = parseFloat(weight.value);
-      if (Number.isFinite(w)) upd({ weight: w });
+    const shown = r.visible !== false;
+    const vis = el("button", {
+      icon: shown ? "eye" : "eye-off",
+      class: `mrl-mini mrl-vis${shown ? "" : " mrl-toggle-off"}`,
+      title: shown ? "Visible: click to hide (hidden boxes are not emitted)" : "Hidden: click to show",
     });
-    const lock = el("button", { text: r.locked ? "🔒" : "🔓", title: "Lock (no moving or resizing on the canvas)", onclick: () => upd({ locked: !r.locked }) });
-    const spark = el("canvas", { class: "mrl-spark", title: "Strength over the run (click to edit in the curve panel)" });
-    let own = null;
-    try {
-      own = Array.isArray(r.curve) && r.curve.length ? C.normalize(r.curve) : null;
-    } catch {}
-    drawSparkline(spark, own || C.normalize(this.legacyCurve()), !own, S.regionColor(s, i));
-    spark.addEventListener("click", () => this.select(id, false));
-    const group = el("select", { title: "Group" });
-    group.appendChild(el("option", { value: "", text: "—" }));
-    for (const g of s.groups) group.appendChild(el("option", { value: g.id, text: g.name }));
-    group.value = s.groups.some((g) => g.id === r.group) ? r.group : "";
-    group.addEventListener("change", () => this.commit(S.assignGroup(this.state, id, group.value || null)));
-    const grip = el("span", { class: "mrl-grip", text: "⠿", draggable: ro ? "false" : "true", title: "Drag to reorder" });
+    vis.addEventListener("click", (e) => {
+      e.stopPropagation();
+      this.commit(S.updateRegion(this.state, id, { visible: !shown }));
+    });
+    const grip = el("span", { class: "mrl-grip", icon: "grip-vertical", draggable: ro ? "false" : "true", title: "Drag to reorder" });
     grip.addEventListener("dragstart", (e) => {
       this.dragItem = { type: "region", id };
       e.dataTransfer?.setData("text/plain", id);
     });
-
+    const nLoras = S.lorasOf(r).filter((e) => e.lora).length;
+    const stop = (fn) => (e) => {
+      e.stopPropagation();
+      fn();
+    };
     const row = el("div", { class: `mrl-row${this.selected.has(id) ? " sel" : ""}${inGroup ? " in-group" : ""}${r.visible === false ? " hidden-row" : ""}` }, [
       grip,
+      el("span", { class: "mrl-chip", style: `background:${S.regionColor(s, i)}` }),
+      el("span", { class: "mrl-name", text: r.name || r.id, title: r.name || r.id }),
+      oob ? el("span", { class: "mrl-oob", icon: "triangle-alert", title: "Extends beyond the canvas: those parts cover no tokens" }) : null,
+      nLoras ? el("span", { class: "mrl-badge", icon: "layers", iconSize: 11, text: String(nLoras), title: `${nLoras} LoRA(s)` }) : null,
+      S.hasPrompt(r) ? el("span", { class: "mrl-badge", icon: "type", iconSize: 11, title: "In the layout prompt" }) : null,
       vis,
-      color,
-      name,
-      el("span", { class: "mrl-bbox", text: `[${r.bbox.join(", ")}]` }),
-      oob ? el("span", { class: "mrl-oob", text: "⚠", title: "Extends beyond the canvas: those parts cover no tokens" }) : null,
-      lora,
-      weight,
-      spark,
-      lock,
-      group,
-      el("button", { text: "▲", title: "Move up (drawn earlier)", onclick: () => this.commit(S.moveRegion(this.state, id, -1)) }),
-      el("button", { text: "▼", title: "Move down (drawn later)", onclick: () => this.commit(S.moveRegion(this.state, id, +1)) }),
-      el("button", {
-        text: "✕",
-        title: "Delete",
-        onclick: () => {
-          this.selected.delete(id);
-          if (this.primary === id) this.primary = null;
-          this.commit(S.deleteRegions(this.state, [id]));
-        },
-      }),
+      el("button", { icon: r.locked ? "lock" : "lock-open", class: `mrl-mini${r.locked ? "" : " mrl-toggle-off"}`, title: r.locked ? "Locked: click to unlock" : "Lock (no moving or resizing on the canvas)", onclick: stop(() => this.commit(S.updateRegion(this.state, id, { locked: !r.locked }))) }),
+      el("button", { icon: "chevron-up", class: "mrl-mini", title: "Move up (drawn earlier)", onclick: stop(() => this.commit(S.moveRegion(this.state, id, -1))) }),
+      el("button", { icon: "chevron-down", class: "mrl-mini", title: "Move down (drawn later)", onclick: stop(() => this.commit(S.moveRegion(this.state, id, +1))) }),
     ]);
-    row.addEventListener("click", (e) => {
-      if (e.target !== row && e.target.tagName !== "SPAN") return;
-      this.select(id, e.shiftKey || e.ctrlKey || e.metaKey);
-    });
-    const item = el("div", { class: "mrl-item" }, [row, this.promptRow(r, inGroup)]);
-    this.dropTarget(item, id, inGroup ? r.group : null);
-    if (ro) for (const x of item.querySelectorAll("input,button,select")) x.disabled = true;
-    return item;
-  }
-
-  /** Second line of a layer row: the box's layout-prompt item (label, caption, text, palette). */
-  promptRow(r, inGroup) {
-    const id = r.id;
-    const upd = (patch) => this.commit(S.updateRegion(this.state, id, patch));
-    const label = el("select", { title: "Layout label: object, character, or text (rendered text)" });
-    for (const l of S.LABELS) label.appendChild(el("option", { value: l, text: l }));
-    if (!S.LABELS.includes(r.label)) label.appendChild(el("option", { value: r.label, text: r.label }));
-    label.value = r.label || "object";
-    label.addEventListener("change", () => upd({ label: label.value }));
-    const caption = el("input", {
-      type: "text",
-      class: "mrl-caption",
-      value: r.caption || "",
-      placeholder: "caption for the layout prompt (empty = LoRA only)",
-      title: "Caption: this box becomes a layout-prompt item when it has one",
-    });
-    caption.addEventListener("change", () => upd({ caption: caption.value }));
-    const parts = [label, caption];
-    if (r.label === "text") {
-      const text = el("input", { type: "text", class: "mrl-render", value: r.text || "", placeholder: "text to render", title: "Text rendered in this box" });
-      text.addEventListener("change", () => upd({ text: text.value }));
-      parts.push(text);
-    }
-    const palette = Array.isArray(r.palette) ? r.palette : [];
-    palette.forEach((c, k) => {
-      const swatch = el("input", { type: "color", value: /^#[0-9a-f]{6}$/i.test(c) ? c : "#000000", title: `Palette colour ${k + 1}` });
-      swatch.addEventListener("change", () => upd({ palette: palette.map((x, j) => (j === k ? swatch.value.toUpperCase() : x)) }));
-      const rm = el("button", { text: "×", title: "Remove colour", onclick: () => upd({ palette: palette.filter((_, j) => j !== k) }) });
-      parts.push(el("span", { class: "mrl-swatch" }, [swatch, rm]));
-    });
-    if (palette.length < S.MAX_PALETTE) {
-      parts.push(el("button", { text: "+ colour", title: "Add a palette colour (up to 5)", onclick: () => upd({ palette: [...palette, "#808080"] }) }));
-    }
-    return el("div", { class: `mrl-prompt${this.selected.has(id) ? " sel" : ""}${inGroup ? " in-group" : ""}` }, parts);
+    row.addEventListener("click", (e) => this.select(id, e.shiftKey || e.ctrlKey || e.metaKey));
+    this.dropTarget(row, id, inGroup ? r.group : null);
+    if (ro) for (const x of row.querySelectorAll("input,button")) x.disabled = true;
+    return row;
   }
 
   addGroup() {
@@ -930,11 +943,311 @@ class RegionEditor {
     } else this.commit(state);
   }
 
+  // ------------------------------------------------------------------ properties panel
+  renderProps() {
+    this.closePicker();
+    const ro = !!this.parseError;
+    const r = this.region(this.primary);
+    let body;
+    if (this.selected.size > 1) {
+      this.propsTitle.textContent = `${this.selected.size} boxes selected`;
+      body = [this.multiSection()];
+    } else if (r) {
+      this.propsTitle.textContent = r.name || r.id;
+      body = [this.boxSection(r), this.promptSection(r), this.lorasSection(r)];
+    } else {
+      this.propsTitle.textContent = "Canvas";
+      body = [this.canvasSection()];
+    }
+    this.props.replaceChildren(...body);
+    // only now is the curve panel (if a LoRA's curve is open) attached and measurable
+    if (this.curvePanel.root.isConnected) this.curvePanel.render();
+    if (ro) for (const x of this.props.querySelectorAll("input,button,select,textarea")) x.disabled = true;
+  }
+
+  field(label, control) {
+    return el("label", { class: "mrl-field" }, [el("span", { text: label }), control]);
+  }
+
+  canvasSection() {
+    const ed = this.state.editor || {};
+    const { W, H } = this.canvasSize();
+    const grid = el("input", { type: "number", min: "1", max: "32", step: "1", value: String(ed.grid_divisions ?? 3), style: "width:60px" });
+    grid.addEventListener("change", () => this.setEditor({ grid_divisions: Math.max(1, parseInt(grid.value) || 3) }));
+    const snap = el("input", { type: "checkbox", title: "Snap to grid while dragging (hold Ctrl/Cmd to bypass)" });
+    snap.checked = !!ed.snap;
+    snap.addEventListener("change", () => this.setEditor({ snap: snap.checked }));
+    const refList = el("datalist", { id: `mrl-ref-${Math.random().toString(36).slice(2)}` });
+    const ref = el("input", { type: "text", list: refList.id, value: ed.reference_image || "", placeholder: "file in ComfyUI/input" });
+    ref.addEventListener("focus", () => inputFileList().then((files) => refList.replaceChildren(...files.map((f) => el("option", { value: f })))));
+    ref.addEventListener("change", () => this.setEditor({ reference_image: ref.value.trim() }));
+    const op = el("input", { type: "range", min: "0", max: "1", step: "0.05", value: String(ed.reference_opacity ?? 0.5), style: "flex:1" });
+    op.addEventListener("input", () => {
+      this.opacityPreview = parseFloat(op.value);
+      this.draw();
+    });
+    op.addEventListener("change", () => {
+      this.opacityPreview = null;
+      this.setEditor({ reference_opacity: parseFloat(op.value) });
+    });
+    return el("div", { class: "mrl-sec" }, [
+      el("div", { class: "mrl-hint", text: `${W} × ${H} px (the node's width/height). Select a box to edit it.` }),
+      this.field("Grid ÷", grid),
+      this.field("Snap", snap),
+      this.field("Reference", ref),
+      refList,
+      this.field("Opacity", op),
+      el("div", { class: "mrl-hint", text: "The reference image is a drawing aid only; it never affects the output." }),
+    ]);
+  }
+
+  multiSection() {
+    const ids = [...this.selected];
+    return el("div", { class: "mrl-sec" }, [
+      el("div", { class: "mrl-hint", text: "Edit one box at a time; with several selected you can group, move with the arrow keys, or delete them." }),
+      el("div", { class: "mrl-field" }, [
+        el("button", { icon: "folder-plus", text: "Group them", onclick: () => this.addGroup() }),
+        el("button", {
+          icon: "trash-2",
+          text: "Delete",
+          onclick: () => {
+            const del = ids.filter((id) => !this.region(id)?.locked);
+            this.selected.clear();
+            this.primary = null;
+            this.commit(S.deleteRegions(this.state, del));
+          },
+        }),
+      ]),
+    ]);
+  }
+
+  boxSection(r) {
+    const id = r.id;
+    const upd = (patch) => this.commit(S.updateRegion(this.state, id, patch));
+    const i = this.state.regions.indexOf(r);
+    const { W, H } = this.canvasSize();
+    const name = el("input", { type: "text", value: r.name || "" });
+    name.addEventListener("change", () => upd({ name: name.value }));
+    const color = el("input", { type: "color", value: S.regionColor(this.state, i), title: "Layer colour" });
+    color.addEventListener("change", () => upd({ color: color.value }));
+    const labels = ["y_min", "x_min", "y_max", "x_max"];
+    const inputs = labels.map((l, k) => el("input", { type: "number", step: "1", value: String(r.bbox[k]), title: `${l} (px from the canvas centre, y down)` }));
+    for (const inp of inputs) {
+      inp.addEventListener("change", () => {
+        const b = inputs.map((x) => Math.round(Number(x.value)));
+        if (b.every(Number.isFinite) && b[2] >= b[0] && b[3] >= b[1]) upd({ bbox: b });
+        else this.renderProps(); // reject: put the stored values back
+      });
+    }
+    const group = el("select", { title: "Group" });
+    group.appendChild(el("option", { value: "", text: "—" }));
+    for (const g of this.state.groups) group.appendChild(el("option", { value: g.id, text: g.name }));
+    group.value = this.state.groups.some((g) => g.id === r.group) ? r.group : "";
+    group.addEventListener("change", () => this.commit(S.assignGroup(this.state, id, group.value || null)));
+    const oob = G.outOfBounds(G.centeredToCanvas(r.bbox, W, H), W, H);
+    return el("div", { class: "mrl-sec" }, [
+      el("div", { class: "mrl-sec-title" }, [
+        el("span", { class: "grow", text: "Box" }),
+        el("button", {
+          icon: "trash-2",
+          text: "Delete box",
+          class: "mrl-mini",
+          onclick: () => {
+            this.selected.delete(id);
+            this.primary = null;
+            this.expanded = null;
+            this.commit(S.deleteRegions(this.state, [id]));
+          },
+        }),
+      ]),
+      this.field("Name", name),
+      el("div", { class: "mrl-field" }, [el("span", { text: "Colour" }), color]),
+      el("div", { class: "mrl-hint", text: "bbox [y_min, x_min, y_max, x_max], px from the canvas centre (y down)" }),
+      el(
+        "div",
+        { class: "mrl-bbox-grid" },
+        labels.map((l, k) => el("label", {}, [l, inputs[k]])),
+      ),
+      oob ? el("div", { class: "mrl-oob", icon: "triangle-alert", text: "Extends beyond the canvas: those parts cover no tokens." }) : null,
+      this.field("Group", group),
+    ]);
+  }
+
+  promptSection(r) {
+    const id = r.id;
+    const upd = (patch) => this.commit(S.updateRegion(this.state, id, patch));
+    const label = el("select", { title: "Layout label" });
+    for (const l of S.LABELS) label.appendChild(el("option", { value: l, text: l }));
+    if (!S.LABELS.includes(r.label)) label.appendChild(el("option", { value: r.label, text: r.label }));
+    label.value = r.label || "object";
+    label.addEventListener("change", () => upd({ label: label.value }));
+    const caption = el("textarea", { placeholder: "caption for the layout prompt (empty = not in the prompt)" });
+    caption.value = r.caption || "";
+    caption.addEventListener("change", () => upd({ caption: caption.value }));
+    const parts = [el("div", { class: "mrl-sec-title", text: "Layout prompt" }), this.field("Label", label), caption];
+    if (r.label === "text") {
+      const text = el("input", { type: "text", value: r.text || "", placeholder: "text to render" });
+      text.addEventListener("change", () => upd({ text: text.value }));
+      parts.push(this.field("Text", text));
+    }
+    const palette = Array.isArray(r.palette) ? r.palette : [];
+    const swatches = palette.map((c, k) => {
+      const sw = el("input", { type: "color", value: /^#[0-9a-f]{6}$/i.test(c) ? c : "#000000", title: `Palette colour ${k + 1}` });
+      sw.addEventListener("change", () => upd({ palette: palette.map((x, j) => (j === k ? sw.value.toUpperCase() : x)) }));
+      return el("span", {}, [sw, el("button", { icon: "x", class: "mrl-mini", title: "Remove colour", onclick: () => upd({ palette: palette.filter((_, j) => j !== k) }) })]);
+    });
+    if (palette.length < S.MAX_PALETTE) swatches.push(el("button", { icon: "plus", text: "colour", class: "mrl-mini", title: "Add a palette colour", onclick: () => upd({ palette: [...palette, "#808080"] }) }));
+    parts.push(el("div", { class: "mrl-field" }, [el("span", { text: "Palette" }), ...swatches]));
+    return el("div", { class: "mrl-sec" }, parts);
+  }
+
+  // ------------------------------------------------------------------ LoRA list
+  entries() {
+    const r = this.region(this.primary);
+    return r ? S.lorasOf(r) : [];
+  }
+
+  setEntries(entries) {
+    if (!this.primary) return;
+    this.commit(S.setLoras(this.state, this.primary, entries));
+  }
+
+  expandedEntry() {
+    if (!this.expanded || this.expanded.id !== this.primary) return null;
+    const e = this.entries()[this.expanded.index];
+    return e ? { curve: e.curve, name: loraDisplayName(e.lora) } : null;
+  }
+
+  updateExpandedEntry(patch) {
+    if (!this.expanded) return;
+    const list = this.entries().map((e) => ({ ...e }));
+    if (!list[this.expanded.index]) return;
+    Object.assign(list[this.expanded.index], patch);
+    this.setEntries(list);
+  }
+
+  lorasSection(r) {
+    const list = S.lorasOf(r);
+    const rows = list.map((e, k) => this.loraEntry(r, e, k));
+    return el("div", { class: "mrl-sec" }, [
+      el("div", { class: "mrl-sec-title" }, [
+        el("span", { class: "grow", text: "LoRAs" }),
+        el("button", {
+          icon: "plus",
+          text: "Add LoRA",
+          class: "mrl-mini",
+          onclick: () => {
+            this.expanded = null;
+            this.setEntries([...S.lorasOf(this.region(this.primary)).map((x) => ({ ...x })), S.newLoraEntry("")]);
+          },
+        }),
+      ]),
+      ...(rows.length ? rows : [el("div", { class: "mrl-hint", text: "No LoRA on this box. Add one to apply it only inside the box." })]),
+      rows.length ? el("div", { class: "mrl-hint", text: "Click a LoRA's curve to edit its strength over the run." }) : null,
+    ]);
+  }
+
+  loraEntry(r, e, k) {
+    const open = this.expanded && this.expanded.id === r.id && this.expanded.index === k;
+    const i = this.state.regions.indexOf(r);
+    const nameBtn = el("button", { class: "mrl-lora-name", title: e.lora || "Choose a LoRA" }, [
+      el("span", { class: "mrl-lora-label", text: loraDisplayName(e.lora) }),
+      icon("chevron-down", 13),
+    ]);
+    nameBtn.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      this.openPicker(nameBtn, e.lora, (path) => {
+        const list = S.lorasOf(this.region(this.primary)).map((x) => ({ ...x }));
+        list[k].lora = path;
+        this.setEntries(list);
+      });
+    });
+    const weight = el("input", { type: "number", step: "0.05", value: String(e.weight ?? 1), title: "Strength (the curve scales it from 0 to 100%)" });
+    weight.addEventListener("change", () => {
+      const w = parseFloat(weight.value);
+      if (!Number.isFinite(w)) return this.renderProps();
+      const list = S.lorasOf(this.region(this.primary)).map((x) => ({ ...x }));
+      list[k].weight = w;
+      this.setEntries(list);
+    });
+    const spark = el("canvas", { class: `mrl-spark${open ? " open" : ""}`, title: "Strength over the run: click to edit" });
+    const cur = this.entryCurve(e);
+    drawSparkline(spark, cur.points, !cur.own, S.regionColor(this.state, i));
+    spark.addEventListener("click", () => {
+      this.expanded = open ? null : { id: r.id, index: k };
+      this.renderProps();
+    });
+    const remove = el("button", {
+      icon: "x",
+      class: "mrl-mini mrl-lora-remove",
+      title: "Remove this LoRA from the box",
+      onclick: () => {
+        this.expanded = null;
+        this.setEntries(S.lorasOf(this.region(this.primary)).filter((_, j) => j !== k));
+      },
+    });
+    const box = el("div", { class: `mrl-lora${open ? " open" : ""}` }, [el("div", { class: "mrl-lora-row" }, [nameBtn, weight, spark, remove])]);
+    if (open) box.appendChild(this.curvePanel.root); // rendered by renderProps once it is in the page
+    return box;
+  }
+
+  // a filterable dropdown of every LoRA path (clicking the short name opens it)
+  openPicker(anchor, current, onPick) {
+    this.closePicker();
+    const filter = el("input", { type: "text", placeholder: "filter…" });
+    const listEl = el("div", { class: "mrl-picker-list" });
+    const picker = el("div", { class: "mrl-picker" }, [filter, listEl]);
+    const fill = () => {
+      const q = filter.value.toLowerCase();
+      const items = ["", ...this.loras].filter((p) => !q || p.toLowerCase().includes(q));
+      if (current && !this.loras.includes(current) && (!q || current.toLowerCase().includes(q))) items.push(current);
+      listEl.replaceChildren(
+        ...items.map((p) => {
+          const it = el("div", { class: `mrl-picker-item${p === current ? " cur" : ""}`, text: p || "(none)", title: p });
+          it.addEventListener("pointerdown", (ev) => {
+            ev.preventDefault();
+            ev.stopPropagation();
+            this.closePicker();
+            onPick(p);
+          });
+          return it;
+        }),
+      );
+    };
+    fill();
+    filter.addEventListener("input", fill);
+    filter.addEventListener("keydown", (ev) => {
+      ev.stopPropagation();
+      if (ev.key === "Escape") this.closePicker();
+      if (ev.key === "Enter") listEl.querySelector('.mrl-picker-item:not([title=""])')?.dispatchEvent(new PointerEvent("pointerdown"));
+    });
+    picker.addEventListener("pointerdown", (ev) => ev.stopPropagation());
+    document.body.appendChild(picker);
+    const rect = anchor.getBoundingClientRect();
+    const top = Math.min(rect.bottom + 2, window.innerHeight - 310);
+    picker.style.left = `${Math.max(4, Math.min(rect.left, window.innerWidth - 330))}px`;
+    picker.style.top = `${Math.max(4, top)}px`;
+    this.picker = picker;
+    this.pickerAway = (ev) => {
+      if (!picker.contains(ev.target)) this.closePicker();
+    };
+    setTimeout(() => document.addEventListener("pointerdown", this.pickerAway, true), 0);
+    filter.focus();
+    listEl.querySelector(".cur")?.scrollIntoView({ block: "nearest" });
+  }
+
+  closePicker() {
+    if (this.pickerAway) document.removeEventListener("pointerdown", this.pickerAway, true);
+    this.pickerAway = null;
+    this.picker?.remove();
+    this.picker = null;
+  }
+
   setStatus(summary) {
     if (!summary) return;
     const items = summary.prompt_items != null ? ` · ${summary.prompt_items} layout prompt item(s)` : "";
     if (summary.status === "active") {
-      this.status = `Last run: ${summary.regions} LoRA region(s), ${summary.applied} LoRA layer(s) on ${summary.modules} module(s), ${summary.skipped} key(s) skipped${items}`;
+      this.status = `Last run: ${summary.regions} LoRA(s) on boxes, ${summary.applied} LoRA layer(s) on ${summary.modules} module(s), ${summary.skipped} key(s) skipped${items}`;
     } else this.status = `Last run: ${summary.message || "inactive"}${items}`;
     this.statusLine.textContent = this.status;
   }
@@ -953,12 +1266,12 @@ app.registerExtension({
       const widget = this.addDOMWidget("region_editor", "moss_region_editor", editor.root, {
         serialize: false,
         hideOnZoom: false,
-        getMinHeight: () => 600,
+        getMinHeight: () => 560,
         getValue: () => undefined,
         setValue: () => {},
       });
       widget.serialize = false; // the JSON lives in the "regions" widget only (8.1c)
-      this.setSize([Math.max(this.size[0], 680), Math.max(this.size[1], 1040)]);
+      this.setSize([Math.max(this.size[0], 1180), Math.max(this.size[1], 980)]);
       return r;
     };
 

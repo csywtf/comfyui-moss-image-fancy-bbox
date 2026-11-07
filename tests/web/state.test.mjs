@@ -34,7 +34,7 @@ test("older or minimal workflows load without crashing", () => {
     for (const r of res.state.regions) {
       assert.equal(typeof r.id, "string");
       assert.equal(r.visible, true);
-      assert.equal(r.weight, 1);
+      assert.ok(Array.isArray(S.lorasOf(r)));
     }
   }
 });
@@ -188,10 +188,17 @@ test("prompt fields: defaults for older workflows, and which boxes become layout
   assert.ok(bad.ok && bad.warnings.some((w) => w.includes("person")));
 });
 
-test("curves: new boxes start at full strength, old boxes keep using the node ramp, bad curves are errors", () => {
+test("LoRA lists: new entries start at full strength, version-1 boxes are read and converted on edit", () => {
   const { state } = S.addRegion(S.emptyState(), [0, 0, 10, 10]);
-  assert.deepEqual(state.regions[0].curve, [{ x: 0, y: 1 }, { x: 1, y: 1 }]);
-  const old = S.parseState('{"regions": [{"bbox": [0, 0, 1, 1], "lora": "a"}]}');
-  assert.ok(old.ok && !("curve" in old.state.regions[0]));
-  assert.equal(S.parseState('{"regions": [{"bbox": [0, 0, 1, 1], "curve": [{"x": 0}]}]}').ok, false);
+  assert.deepEqual(state.regions[0].loras, []);
+  assert.deepEqual(S.newLoraEntry("a.safetensors"), { lora: "a.safetensors", weight: 1, curve: [{ x: 0, y: 1 }, { x: 1, y: 1 }] });
+  const old = S.parseState('{"version": 1, "regions": [{"id": "r", "bbox": [0, 0, 1, 1], "lora": "a", "weight": 0.5}]}');
+  assert.ok(old.ok);
+  assert.deepEqual(S.lorasOf(old.state.regions[0]), [{ lora: "a", weight: 0.5 }]);   // no curve: node ramp
+  const moved = S.setLoras(old.state, "r", [...S.lorasOf(old.state.regions[0]), S.newLoraEntry("b")]);
+  const r = moved.regions[0];
+  assert.ok(!("lora" in r) && !("weight" in r) && r.loras.length === 2);
+  assert.equal(S.parseState('{"regions": [{"bbox": [0, 0, 1, 1], "loras": [{"lora": "a", "curve": [{"x": 0}]}]}]}').ok, false);
+  assert.equal(S.parseState('{"regions": [{"bbox": [0, 0, 1, 1], "loras": "a"}]}').ok, false);
+  assert.equal(S.parseState('{"regions": [{"bbox": [0, 0, 1, 1], "lora": "a", "curve": [{"x": 0}]}]}').ok, false);
 });
