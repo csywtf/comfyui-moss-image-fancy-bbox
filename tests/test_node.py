@@ -136,6 +136,10 @@ def regions_json(*regions):
         for i, (b, w) in enumerate(regions)]})
 
 
+# All three layout options at "not set": exercises the refusal path now that the node has measured defaults.
+UNSET = dict(text_position="not set", image_order="not set", source_tokens="not set")
+
+
 def apply(node, patcher, regions, strict=True, **kw):
     args = dict(width=toy.W, height=toy.H, regions=regions, vae_downscale=toy.VAE, patch_size=toy.PATCH,
                 ramp_start=0.0, ramp_end=0.0, steps=10, strict=strict)
@@ -158,12 +162,12 @@ def test_is_changed_always(fake_comfy):
 def test_strict_refuses_with_unset_layout(fake_comfy):
     patcher, node = fake_comfy
     with pytest.raises(LayoutNotEstablished, match="discover_moss_layout"):
-        apply(node, patcher, regions_json((FULL, 1.0)))
+        apply(node, patcher, regions_json((FULL, 1.0)), **UNSET)
 
 
 def test_non_strict_unset_layout_passes_model_through_unpatched(fake_comfy):
     patcher, node = fake_comfy
-    out = apply(node, patcher, regions_json((FULL, 1.0)), strict=False)
+    out = apply(node, patcher, regions_json((FULL, 1.0)), strict=False, **UNSET)
     m = out["result"][0]
     assert m is not patcher and not m.injections and not any(m.wrappers.values())
     assert out["ui"]["moss_regional_lora"][0]["status"] == "inactive"
@@ -250,13 +254,14 @@ def test_prompt_only_boxes_work_in_strict_mode_without_discovery(fake_comfy):
 def test_lora_box_still_refused_in_strict_mode_without_discovery(fake_comfy):
     patcher, node = fake_comfy
     with pytest.raises(LayoutNotEstablished):
-        apply(node, patcher, json.dumps({"version": 1, "regions": [prompt_box(lora=LORA_NAME)]}), caption="x")
+        apply(node, patcher, json.dumps({"version": 1, "regions": [prompt_box(lora=LORA_NAME)]}), caption="x",
+              **UNSET)
 
 
 def test_non_strict_unset_layout_still_outputs_prompt(fake_comfy):
     patcher, node = fake_comfy
     out = apply(node, patcher, json.dumps({"version": 1, "regions": [prompt_box(lora=LORA_NAME)]}),
-                strict=False, caption="x")
+                strict=False, caption="x", **UNSET)
     m, prompt = out["result"]
     assert not m.injections and json.loads(prompt)["items"][0]["caption"] == "a cat"
 
@@ -296,7 +301,8 @@ def test_advanced_options_supply_the_layout(fake_comfy):
 def test_partly_set_options_name_only_the_missing_ones(fake_comfy):
     patcher, node = fake_comfy
     with pytest.raises(LayoutNotEstablished) as e:
-        apply(node, patcher, regions_json((FULL, 1.0)), text_position="suffix", image_order="raster")
+        apply(node, patcher, regions_json((FULL, 1.0)), text_position="suffix", image_order="raster",
+              source_tokens="not set")
     msg = str(e.value)
     assert "source_tokens" in msg and "text_position" not in msg
     assert "MOSS-Image Layout Discovery" in msg
@@ -312,19 +318,15 @@ def test_not_set_options_fall_back_to_layout_config(fake_comfy, monkeypatch):
 def test_advanced_options_declared(fake_comfy):
     _, node = fake_comfy
     opt = node.MossRegionalLora.INPUT_TYPES()["optional"]
-    for name, default in (("text_position", "suffix"), ("image_order", "not set"), ("source_tokens", "not set")):
+    for name, default in (("text_position", "suffix"), ("image_order", "raster"), ("source_tokens", "end")):
         choices, spec = opt[name]
         assert choices[0] == "not set" and spec["default"] == default and spec["advanced"] is True
     assert "MossLayoutDiscovery" in node.NODE_CLASS_MAPPINGS
 
 
-def test_text_position_defaults_to_measured_suffix(fake_comfy):
-    """Without the option (an API prompt) the node uses the measured default; the error then names only
-    the two values that still need a discovery run."""
+def test_measured_layout_defaults_apply_without_options(fake_comfy):
+    """Without the options (an API prompt) the node uses the measured defaults and LoRA boxes run."""
     patcher, node = fake_comfy
-    with pytest.raises(LayoutNotEstablished) as e:
-        apply(node, patcher, regions_json((FULL, 1.0)))
-    msg = str(e.value)
-    assert "image_order" in msg and "source_tokens" in msg and "text_position" not in msg
-    out = apply(node, patcher, regions_json((FULL, 1.0)), image_order="raster", source_tokens="none")
+    out = apply(node, patcher, regions_json((FULL, 1.0)))
     assert out["ui"]["moss_regional_lora"][0]["status"] == "active"
+    assert list(out["result"][0].injections) == ["moss_regional_lora"]

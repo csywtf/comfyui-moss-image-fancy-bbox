@@ -11,12 +11,13 @@ One node to draw the boxes of a MOSS-Image generation. Each box can carry:
 
 The node outputs the patched MODEL and the finished layout prompt STRING.
 
-> **LoRA boxes need a one-time layout discovery first; until then the node refuses to apply them.**
-> It needs three facts about MOSS-Image's transformer sequence that are measured, not assumed: queue
-> the included **MOSS-Image Layout Discovery** node once and copy its three values into the main
-> node's advanced options (see *Layout discovery* below). A wrong guess would produce a node that
-> *appears* to work (the LoRA still changes the picture) while the mask sits on the wrong tokens.
-> Prompt-only boxes don't touch the model and work right away.
+> **Where the LoRA lands depends on three facts about MOSS-Image's transformer sequence.** They were
+> measured with the included **MOSS-Image Layout Discovery** node on ComfyUI's MOSS-Image
+> implementation and are the main node's defaults (`text_position = suffix`, `image_order = raster`,
+> `source_tokens = end`). They come from ComfyUI's code, not the weights, so they hold for every
+> MOSS-Image checkpoint. **After a ComfyUI update, re-run the discovery node** (see *Layout discovery*
+> below): a wrong value would produce a node that *appears* to work (the LoRA still changes the
+> picture) while the mask sits on the wrong tokens.
 
 ## Install
 
@@ -66,7 +67,7 @@ Inputs:
 | `steps` | total sampling steps, for the ramp |
 | `strict` | on: refuse to apply LoRAs while the layout is unverified and raise on any alignment problem. Off: pass the model through untouched (with a warning) instead. Prompt-only boxes work either way |
 | `caption` | description of the whole image: the layout prompt's summary caption. With no captioned boxes, `prompt` is just this text |
-| `text_position`, `image_order`, `source_tokens` | **advanced options**: the layout values reported by the *MOSS-Image Layout Discovery* node. `text_position` defaults to `suffix`, as measured on a real MOSS-Image run; the other two default to "not set" until a run confirms them. "not set" falls back to `moss_regional_lora/layout_config.py` (unset by default) |
+| `text_position`, `image_order`, `source_tokens` | **advanced options**: the layout values reported by the *MOSS-Image Layout Discovery* node. Their defaults (`suffix`, `raster`, `end`) were measured on a real MOSS-Image run. "not set" falls back to `moss_regional_lora/layout_config.py` (unset by default) |
 
 ## Why the weights are never merged
 
@@ -139,7 +140,7 @@ or resized on the canvas. Group headers collapse, rename, show all, hide all, mo
 An optional reference image from ComfyUI's `input` folder can be shown under the boxes with an
 opacity slider; it is a drawing aid only.
 
-## Layout discovery (once)
+## Layout discovery (after ComfyUI updates)
 
 The node needs to know which positions of the transformer sequence are image tokens, whether the
 prompt comes before or after them, whether image tokens are in plain row-by-row order, and where an
@@ -147,7 +148,9 @@ edit pipeline's source-image tokens go. The **MOSS-Image Layout Discovery** node
 loaded model and reports the values to set. It changes nothing; it only measures.
 
 The values come from ComfyUI's MOSS-Image code, not from the weights, so one run covers every
-MOSS-Image checkpoint. Re-run it after a ComfyUI update.
+MOSS-Image checkpoint. The main node's defaults are the values measured on ComfyUI's 0.44-era
+implementation; re-run the discovery after a ComfyUI update, and if it reports different values, set
+them in the main node's advanced options.
 
 1. Add **MOSS-Image Layout Discovery** (`model_patches/moss_image`). Connect your MOSS-Image MODEL
    (straight from the loader, without other patches), CLIP and VAE.
