@@ -63,8 +63,8 @@ Inputs:
 | `width`, `height` | output canvas in pixels; must match the latent being sampled (checked at run time) |
 | `regions` | the region list as JSON, edited with the canvas below it (see *Region editor*) |
 | `vae_downscale`, `patch_size` | pixels per latent cell and latent cells per token; the *MOSS-Image Layout Discovery* report gives both (ComfyUI's MOSS-Image latent format is 16 px per cell) |
-| `ramp_start`, `ramp_end` | the LoRA fades in from 0 at `ramp_start` of the steps to full at `ramp_end` (default 0.15 → 1.0), so it fills the layout instead of fighting it |
-| `steps` | total sampling steps, for the ramp |
+| `ramp_start`, `ramp_end` | advanced, legacy: a linear fade-in used only by boxes **without** their own strength curve (workflows saved before curves). New boxes get their own curve (see *Strength curves*) |
+| `steps` | advanced, fallback: the curves follow the sampler's own step count; this is used only if a sampler doesn't report one |
 | `strict` | on: refuse to apply LoRAs while the layout is unverified and raise on any alignment problem. Off: pass the model through untouched (with a warning) instead. Prompt-only boxes work either way |
 | `caption` | description of the whole image: the layout prompt's summary caption. With no captioned boxes, `prompt` is just this text |
 | `text_position`, `image_order`, `source_tokens` | **advanced options**: the layout values reported by the *MOSS-Image Layout Discovery* node. Their defaults (`suffix`, `raster`, `end`) were measured on a real MOSS-Image run. "not set" falls back to `moss_regional_lora/layout_config.py` (unset by default) |
@@ -132,13 +132,36 @@ box with only a LoRA leaves the prompt alone; a box with only a caption leaves t
 | group | **+ Group** (puts the selected regions in a new group), or pick a group in a row |
 
 The keyboard shortcuts work while the canvas has focus (click it first). A row's first line has a
-visibility toggle, colour, name, box readout, LoRA, weight, lock, group, move and delete controls; its
+visibility toggle, colour, name, box readout, LoRA, weight, strength-curve preview, lock, group, move
+and delete controls; its
 second line has the layout label, caption, text to render (`text` boxes) and up to five palette
 colours. The canvas label shows what each box does (`LoRA`, its label, or both). ⚠ marks a
 box that extends past the canvas (allowed, but usually a mistake). Locked regions cannot be moved
 or resized on the canvas. Group headers collapse, rename, show all, hide all, move and delete all.
 An optional reference image from ComfyUI's `input` folder can be shown under the boxes with an
 opacity slider; it is a drawing aid only.
+
+### Strength curves
+
+Each box has its own curve for how strongly its LoRA applies over the sampling run: left to right is
+0–100% of the steps, bottom to top is 0–100% of the box's weight (a weight of −2 at 50% strength
+applies −1). The panel under the canvas edits the selected box's curve; each layer row shows a small
+preview. New boxes start at full strength for the whole run.
+
+| action | how |
+|---|---|
+| add a point | click an empty spot in the graph (snaps to 5% steps when Snap is on; **Ctrl/Cmd** bypasses) |
+| move a point | drag it (it stays between its neighbours) |
+| remove a point | double-click or right-click it, or select it and press **Delete** with the graph focused |
+| bend a segment | drag its ◆ handle up or down (ease in / ease out) |
+| hard step | select a segment's ◆ handle and press **Hold**: its start value holds until the next point, then jumps |
+| straighten | select a segment and press **Straight** |
+| presets | **Full**, **Fade in**, **Fade out**, **Stop at 50%** |
+
+Shape-type LoRAs (a body or weight slider) usually need strength in the early steps, where shape is
+decided; character LoRAs that fight the layout can fade in later. Curve edits are undoable like any
+other edit. Boxes saved before curves existed show a dashed curve: they keep using the node's
+`ramp_start`/`ramp_end` until you edit their curve.
 
 ## Layout discovery (after ComfyUI updates)
 

@@ -90,12 +90,16 @@ class MossRegionalLora:
                 "patch_size": ("INT", {"default": 1, "min": 1, "max": 16,
                                        "tooltip": "Latent cells per transformer token along each axis. "
                                                   "Confirm with tools/discover_moss_layout.py."}),
-                "ramp_start": ("FLOAT", {"default": 0.15, "min": 0.0, "max": 1.0, "step": 0.01,
-                                         "tooltip": "Fraction of the steps at which the LoRA starts fading in (0 = from the first step)."}),
-                "ramp_end": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 1.0, "step": 0.01,
-                                       "tooltip": "Fraction of the steps at which the LoRA reaches full strength."}),
-                "steps": ("INT", {"default": 20, "min": 1, "max": 10000,
-                                  "tooltip": "Total sampling steps; set it to the sampler's step count."}),
+                "ramp_start": ("FLOAT", {"default": 0.15, "min": 0.0, "max": 1.0, "step": 0.01, "advanced": True,
+                                         "tooltip": "Only for boxes without their own strength curve (workflows saved "
+                                                    "before curves): fraction of the steps at which the LoRA starts "
+                                                    "fading in."}),
+                "ramp_end": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 1.0, "step": 0.01, "advanced": True,
+                                       "tooltip": "Only for boxes without their own strength curve: fraction of the "
+                                                  "steps at which the LoRA reaches full strength."}),
+                "steps": ("INT", {"default": 20, "min": 1, "max": 10000, "advanced": True,
+                                  "tooltip": "Fallback only: the strength curves follow the sampler's own step count. "
+                                             "Used if a sampler does not report its schedule."}),
                 "strict": ("BOOLEAN", {"default": True,
                                        "tooltip": "Refuse to apply LoRAs while the sequence layout is unverified, and "
                                                   "raise instead of warning when a mask cannot be aligned. Boxes "

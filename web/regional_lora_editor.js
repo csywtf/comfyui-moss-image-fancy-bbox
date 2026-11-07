@@ -9,6 +9,8 @@ import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 import * as G from "./geometry.js";
 import * as S from "./state.js";
+import * as C from "./curve.js";
+import { CurvePanel, drawSparkline } from "./curve_panel.js";
 
 const NODE_NAME = "MossRegionalLora";
 const POLL_MS = 250;
@@ -43,6 +45,17 @@ const CSS = `
 .mrl-bbox{font-family:monospace;font-size:11px;opacity:.85;min-width:130px}
 .mrl-oob{color:#fb4}
 .mrl-status{opacity:.85}
+.mrl-curve{flex:0 0 auto;display:flex;flex-direction:column;gap:2px}
+.mrl-curve-bar{display:flex;flex-wrap:wrap;align-items:center;gap:4px}
+.mrl-curve-bar button{background:var(--comfy-input-bg,#222);color:inherit;border:1px solid var(--border-color,#555);border-radius:3px;padding:0 5px;cursor:pointer;line-height:18px}
+.mrl-curve-bar button:disabled{opacity:.4;cursor:default}
+.mrl-curve-bar button.on{background:#a63;border-color:#c84}
+.mrl-curve-title{font-weight:bold;margin-right:4px}
+.mrl-curve-readout{margin-left:auto;font-family:monospace;opacity:.85}
+.mrl-sep{width:8px}
+.mrl-curve-wrap{position:relative;height:120px}
+.mrl-curve-wrap canvas{position:absolute;left:0;top:0;outline:none}
+.mrl-spark{cursor:pointer;vertical-align:middle}
 .mrl-item{border-bottom:1px solid rgba(128,128,128,.2)}
 .mrl-item .mrl-row{border-bottom:none}
 .mrl-prompt{display:flex;align-items:center;gap:4px;padding:0 4px 3px 26px}
@@ -108,6 +121,8 @@ class RegionEditor {
     this.wRegions = node.widgets.find((w) => w.name === "regions");
     this.wWidth = node.widgets.find((w) => w.name === "width");
     this.wHeight = node.widgets.find((w) => w.name === "height");
+    this.wRampStart = node.widgets.find((w) => w.name === "ramp_start");
+    this.wRampEnd = node.widgets.find((w) => w.name === "ramp_end");
     this.history = new S.History(100);
     this.state = S.emptyState();
     this.parseError = null;
@@ -137,6 +152,7 @@ class RegionEditor {
   destroy() {
     clearInterval(this.timer);
     this.ro?.disconnect();
+    this.curvePanel?.destroy();
   }
 
   // ------------------------------------------------------------------ DOM
@@ -187,12 +203,21 @@ class RegionEditor {
     this.wrap = el("div", { class: "mrl-canvas-wrap" }, [this.canvas]);
     this.list = el("div", { class: "mrl-list" });
     this.statusLine = el("div", { class: "mrl-status" });
+    this.curvePanel = new CurvePanel({
+      region: () => this.region(this.primary),
+      legacy: () => this.legacyCurve(),
+      readOnly: () => !!this.parseError,
+      snap: () => !!this.state.editor?.snap,
+      color: (r) => (r ? S.regionColor(this.state, this.state.regions.indexOf(r)) : null),
+      commitCurve: (points) => this.primary && this.commit(S.updateRegion(this.state, this.primary, { curve: points })),
+    });
     this.root = el("div", { class: "mrl-root", tabindex: "-1" }, [
       bar,
       this.readout,
       this.errorBox,
       this.warnBox,
       this.wrap,
+      this.curvePanel.root,
       this.list,
       this.statusLine,
     ]);
@@ -230,7 +255,7 @@ class RegionEditor {
       this.syncFromWidget(false);
     }
     const { W, H } = this.canvasSize();
-    const d = `${W}x${H}`;
+    const d = `${W}x${H}:${this.wRampStart?.value}:${this.wRampEnd?.value}`;
     if (d !== this.lastDims) {
       this.lastDims = d;
       this.renderAll();
@@ -511,9 +536,17 @@ class RegionEditor {
   }
 
   // ------------------------------------------------------------------ rendering
+  /** The node-level ramp (for boxes without their own curve), from the ramp_start/ramp_end widgets. */
+  legacyCurve() {
+    const rs = Number(this.wRampStart?.value ?? 0.15);
+    const re = Number(this.wRampEnd?.value ?? 1);
+    return C.legacyRamp(Number.isFinite(rs) ? rs : 0.15, Number.isFinite(re) ? re : 1);
+  }
+
   renderAll() {
     this.renderBar();
     this.renderReadout();
+    this.curvePanel.render();
     this.renderList();
     this.loadReference();
     this.draw();
@@ -800,6 +833,13 @@ class RegionEditor {
       if (Number.isFinite(w)) upd({ weight: w });
     });
     const lock = el("button", { text: r.locked ? "🔒" : "🔓", title: "Lock (no moving or resizing on the canvas)", onclick: () => upd({ locked: !r.locked }) });
+    const spark = el("canvas", { class: "mrl-spark", title: "Strength over the run (click to edit in the curve panel)" });
+    let own = null;
+    try {
+      own = Array.isArray(r.curve) && r.curve.length ? C.normalize(r.curve) : null;
+    } catch {}
+    drawSparkline(spark, own || C.normalize(this.legacyCurve()), !own, S.regionColor(s, i));
+    spark.addEventListener("click", () => this.select(id, false));
     const group = el("select", { title: "Group" });
     group.appendChild(el("option", { value: "", text: "—" }));
     for (const g of s.groups) group.appendChild(el("option", { value: g.id, text: g.name }));
@@ -820,6 +860,7 @@ class RegionEditor {
       oob ? el("span", { class: "mrl-oob", text: "⚠", title: "Extends beyond the canvas: those parts cover no tokens" }) : null,
       lora,
       weight,
+      spark,
       lock,
       group,
       el("button", { text: "▲", title: "Move up (drawn earlier)", onclick: () => this.commit(S.moveRegion(this.state, id, -1)) }),
@@ -912,12 +953,12 @@ app.registerExtension({
       const widget = this.addDOMWidget("region_editor", "moss_region_editor", editor.root, {
         serialize: false,
         hideOnZoom: false,
-        getMinHeight: () => 460,
+        getMinHeight: () => 600,
         getValue: () => undefined,
         setValue: () => {},
       });
       widget.serialize = false; // the JSON lives in the "regions" widget only (8.1c)
-      this.setSize([Math.max(this.size[0], 640), Math.max(this.size[1], 900)]);
+      this.setSize([Math.max(this.size[0], 680), Math.max(this.size[1], 1040)]);
       return r;
     };
 

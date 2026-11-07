@@ -31,6 +31,7 @@ from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 import torch
 import torch.nn.functional as F
 
+from .curve import evaluate as evaluate_curve, legacy_ramp
 from .geometry import coverage_grid, patch_grid_size, raster_flatten
 from .layout import DISCOVERY_TOOL, Layout
 from .lora_file import LoraTarget
@@ -53,12 +54,17 @@ def _compiling() -> bool:
         return False
 
 
+def progress_of(step: int, steps: int) -> float:
+    """Position in the run: step 0 is 0.0 and the final step is 1.0."""
+    return step / max(steps - 1, 1)
+
+
 def ramp_factor(step: int, steps: int, ramp_start: float, ramp_end: float) -> float:
     """0 at ``ramp_start`` of the run, rising linearly to 1 at ``ramp_end`` (FR-7).
 
-    Progress is ``step / (steps - 1)``, so step 0 is 0.0 and the final step is 1.0.
+    The node-level ramp, used for boxes without their own strength curve.
     """
-    progress = step / max(steps - 1, 1)
+    progress = progress_of(step, steps)
     if progress < ramp_start:
         return 0.0
     if ramp_end <= ramp_start or progress >= ramp_end:
@@ -214,6 +220,8 @@ class RegionalLoraController:
         self.image_masks = [raster_flatten(coverage_grid(r.bbox, self.width, self.height,
                                                          self.vae_downscale, self.patch_size))
                             for r in self.regions]
+        node_ramp = legacy_ramp(self.ramp_start, self.ramp_end)
+        self.curves = [r.curve if r.curve is not None else node_ramp for r in self.regions]
         self.state = _State()
         self.gates: Dict[str, _ModuleGate] = {}
         self.skipped: List[Tuple[int, str, str]] = []   # (region index, LoRA key, reason)
@@ -315,27 +323,30 @@ class RegionalLoraController:
             raise RegionalLoraError(msg)
         self._warn_once(msg, msg + " (strict is off: regional LoRA skipped for this call)")
 
-    def _resolve_step(self, transformer_options) -> int:
+    def _resolve_step(self, transformer_options) -> Tuple[int, int]:
+        """(step index, total steps) of the current model call.
+
+        The total comes from the sampler's own schedule when it reports one, so it never has to be kept
+        in sync by hand; the node's ``steps`` input is only the fallback.
+        """
         sigmas = transformer_options.get("sigmas")
         sample_sigmas = transformer_options.get("sample_sigmas")
         sigma = float(sigmas.flatten()[0]) if torch.is_tensor(sigmas) else None
         if sigma is None:
             self._warn_once("nosigma", "no current sigma in transformer_options; treating every call as the final step")
-            return max(self.steps - 1, 0)
+            return max(self.steps - 1, 0), self.steps
         if sample_sigmas is not None:
             ss = [float(s) for s in (sample_sigmas.flatten().tolist() if torch.is_tensor(sample_sigmas) else sample_sigmas)]
-            if len(ss) - 1 != self.steps:
-                self._warn_once(("steps", len(ss)), f"node 'steps' is {self.steps} but the sampler is running "
-                                                    f"{len(ss) - 1} steps; the ramp uses the node's value")
-            return step_index(sigma, ss)
+            return step_index(sigma, ss), max(len(ss) - 1, 1)
         # No schedule available: count distinct decreasing sigmas; a rise means a new run.
+        self._warn_once("nosched", "the sampler reports no schedule; using the node's 'steps' input for the strength curves")
         last, step = self._fallback_step
         if last is None or sigma > last:
             step = 0
         elif sigma < last:
             step += 1
         self._fallback_step = (sigma, step)
-        return step
+        return step, self.steps
 
     def _sequence_masks(self, seq_len, n_text, n_src, device, dtype) -> Optional[torch.Tensor]:
         key = (seq_len, n_text, n_src, device, dtype)
@@ -392,18 +403,20 @@ class RegionalLoraController:
         per = B // len(cond_or_uncond)
         row_is_cond = [cond_or_uncond[b // per] == COND for b in range(B)]
 
-        step = self._resolve_step(transformer_options)
-        ramp = ramp_factor(step, self.steps, self.ramp_start, self.ramp_end)
+        step, steps = self._resolve_step(transformer_options)
+        progress = progress_of(step, steps)
+        factors = [evaluate_curve(c, progress) for c in self.curves]      # per box, 0..1
 
         device = x.device
         dtype = dtype or x.dtype
         self._prepare_device(device, dtype)
-        row_scale = torch.tensor([ramp if c else 0.0 for c in row_is_cond], dtype=torch.float32).to(device=device, dtype=dtype)
+        row_scale = torch.tensor([1.0 if c else 0.0 for c in row_is_cond], dtype=torch.float32).to(device=device, dtype=dtype)
+        box_scale = torch.tensor(factors, dtype=torch.float32).to(device=device, dtype=dtype)
         coefs = {}
         for src in src_variants:
             seq_len = self.layout.sequence_length(n_image, n_text, src)
             seq = self._sequence_masks(seq_len, n_text, src, device, dtype)
-            coef = seq[:, None, :, None] * row_scale[None, :, None, None]       # [R, B, L, 1]
+            coef = seq[:, None, :, None] * row_scale[None, :, None, None] * box_scale[:, None, None, None]  # [R, B, L, 1]
             coefs[(B, seq_len)] = list(coef.unbind(0))
         st.coefs = coefs
         st.hits = torch.zeros((), dtype=torch.int64, device=device)

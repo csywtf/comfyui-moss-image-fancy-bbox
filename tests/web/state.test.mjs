@@ -187,3 +187,11 @@ test("prompt fields: defaults for older workflows, and which boxes become layout
   const bad = S.parseState('{"regions": [{"bbox": [0, 0, 1, 1], "label": "person"}]}');
   assert.ok(bad.ok && bad.warnings.some((w) => w.includes("person")));
 });
+
+test("curves: new boxes start at full strength, old boxes keep using the node ramp, bad curves are errors", () => {
+  const { state } = S.addRegion(S.emptyState(), [0, 0, 10, 10]);
+  assert.deepEqual(state.regions[0].curve, [{ x: 0, y: 1 }, { x: 1, y: 1 }]);
+  const old = S.parseState('{"regions": [{"bbox": [0, 0, 1, 1], "lora": "a"}]}');
+  assert.ok(old.ok && !("curve" in old.state.regions[0]));
+  assert.equal(S.parseState('{"regions": [{"bbox": [0, 0, 1, 1], "curve": [{"x": 0}]}]}').ok, false);
+});
