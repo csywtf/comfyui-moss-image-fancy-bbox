@@ -67,6 +67,16 @@ class FakeRunner:
             return torch.zeros(image.shape[0], image.shape[1], dtype=torch.bool)
         return rect_mask(x0 + 2, y0 + 2, x1 - 2, y1 - 2, image.shape[0], image.shape[1])
 
+    def segment_points(self, image, key, positive, negative):
+        """The scene's "region" rectangles that hold a positive point and no negative one."""
+        self.calls.append(("points", list(positive), list(negative)))
+        out = torch.zeros(image.shape[0], image.shape[1], dtype=torch.bool)
+        inside = lambda r, p: r[0] <= p[0] < r[2] and r[1] <= p[1] < r[3]
+        for r in self.scene.get("region", []):
+            if any(inside(r, p) for p in positive) and not any(inside(r, p) for p in negative):
+                out |= rect_mask(*r, image.shape[0], image.shape[1])
+        return out
+
     def find(self, image, key, crop, prompt):
         self.calls.append(("find", crop, prompt, image.clone()))
         out = torch.zeros(image.shape[0], image.shape[1], dtype=torch.bool)
@@ -268,14 +278,67 @@ def test_clean_mask_fills_speckle_and_drops_specks():
     assert torch.equal(cm.clean_mask(near_edge, 2), near_edge)
 
 
+def hug_with_arm():
+    """Left character (layer 0) reaches her arm across the right one (layer 1, on top), and the right
+    character's person detection wrongly includes that arm."""
+    boxes = [box("left", centred(0, 0, 100, 100)), box("right", centred(100, 0, 200, 100))]
+    arm = (60, 50, 140, 60)
+    scene = {"person": [(5, 2, 98, 100), (102, 2, 195, 100)], "region": [arm],
+             "hand": [(130, 50, 140, 60), (160, 80, 170, 90)]}
+    scene["person"][1] = (102, 2, 195, 100)
+    return boxes, scene, arm
+
+
+def test_a_plus_point_claims_an_arm_over_the_layer_order():
+    boxes, scene, arm = hug_with_arm()
+    runner = FakeRunner(scene)
+    hands = {"parts": {"face": {"on": False}, "eyes": {"on": False}, "hands": {"on": True}}}
+    stored = {"left": {**hands, "points": [{"x": 0.6, "y": 0.55, "label": 1}]}, "right": hands}
+    f = cm.mask_frame(torch.rand(H, W, 3), boxes, details(boxes, stored), None, runner, 0.15)
+    left, right = f.boxes
+    assert left.outline[50:60, 60:140].all()                     # the whole arm, across the other box
+    assert (f.owner[50:60, 60:140] == 0).all()                    # hers, though the right box is on top
+    assert left.found["hands"] and left.parts["hands"][50:60, 130:140].all()   # her hand, at the arm's end
+    assert not right.parts["hands"][50:60, 130:140].any() and right.parts["hands"][80:90, 160:170].all()
+    # her + point was passed to SAM3 as a negative for nobody else's claim (right has no points)
+    assert [c for c in runner.calls if c[0] == "points"] == [("points", [(120, 55)], [])]
+    lm = cm.label_map(f)
+    assert lm[55, 120, 0] == 1 and lm[55, 170, 0] == 2
+
+
+def test_minus_points_remove_and_other_boxes_plus_points_are_negatives():
+    boxes, scene, arm = hug_with_arm()
+    scene["region"].append((150, 20, 190, 40))                    # something else on the right character
+    runner = FakeRunner(scene)
+    stored = {"right": {"points": [{"x": 0.6, "y": 0.55, "label": 0}, {"x": 0.85, "y": 0.3, "label": 1}]},
+              "left": {"points": [{"x": 0.6, "y": 0.55, "label": 1}]}}
+    f = cm.mask_frame(torch.rand(H, W, 3), boxes, details(boxes, stored), None, runner, 0.15)
+    left, right = f.boxes
+    assert not right.outline[50:60, 100:140].any()               # her - point: the arm isn't the right one's
+    assert left.outline[50:60, 100:140].all()
+    calls = [c for c in runner.calls if c[0] == "points"]
+    # right's + region: its own - point and left's + point as negatives
+    assert ("points", [(170, 30)], [(120, 55), (120, 55)]) in calls
+    # left's + region: right's + point as a negative
+    assert ("points", [(120, 55)], [(170, 30)]) in calls
+
+
+def test_points_are_read_from_the_settings():
+    d = cm.resolve_detail(box("a", [0, 0, 1, 1]), {"points": [{"x": 0.5, "y": 0.25}, {"x": 0.1, "y": 0.2, "label": 0},
+                                                               {"x": 2, "y": 0.5}, {"x": "a", "y": 0}, "nope"]})
+    assert d.points == ((0.5, 0.25, True), (0.1, 0.2, False))
+    assert cm.resolve_detail(box("a", [0, 0, 1, 1]), None).points == ()
+
+
 # ------------------------------------------------------------------------- SAM3 wrapper
 class FakeDetect:
     calls = []
 
     @classmethod
-    def execute(cls, model, image, conditioning=None, bboxes=None, threshold=0.5, refine_iterations=2,
-                individual_masks=False):
+    def execute(cls, model, image, conditioning=None, bboxes=None, positive_coords=None, negative_coords=None,
+                threshold=0.5, refine_iterations=2, individual_masks=False):
         cls.calls.append({"shape": tuple(image.shape), "cond": conditioning, "bboxes": bboxes,
+                          "pos": positive_coords, "neg": negative_coords,
                           "threshold": threshold, "refine": refine_iterations, "individual": individual_masks})
         m = torch.zeros(1, image.shape[1], image.shape[2])
         m[0, :2, :3] = 1.0                                       # top-left corner of whatever it was given
@@ -339,6 +402,44 @@ def test_runner_calls_comfyui_sam3_and_memoises(fake_sam3):
     # a different threshold is a different request
     cm.Sam3Runner(model, clip, 0.6, 3).segment_box(img, key, (10, 20, 60, 70))
     assert len(fake_sam3.calls) == n + 1
+
+
+def test_part_masks_stay_inside_the_detectors_boxes(fake_sam3, monkeypatch):
+    """SAM3's refined face mask runs down the neck; the detector's box stops at the chin."""
+    def execute(model, image, conditioning=None, bboxes=None, threshold=0.5, refine_iterations=2,
+                individual_masks=False):
+        m = torch.zeros(1, image.shape[1], image.shape[2])
+        m[0, 10:60, 10:30] = 1.0                                 # face (rows 10-35) + neck (rows 35-60)
+        return types.SimpleNamespace(args=(m, [[{"x": 8.0, "y": 8.0, "width": 24.0, "height": 27.0, "score": 0.9}]]))
+    monkeypatch.setattr(FakeDetect, "execute", staticmethod(execute))
+    r = cm.Sam3Runner(types.SimpleNamespace(model=object()), FakeClip(), 0.5, 2)
+    img = torch.rand(H, W, 3)
+    f = r.find(img, cm.image_key(img), (100, 0, 200, 100), "face:2")
+    # box rows 8..35 grown by 8% of 27 px (2.16) -> rows up to 37; columns all kept; pasted at x+100
+    assert f[10:37, 110:130].all() and not f[38:, :].any() and f.sum() == 27 * 20
+
+
+def test_clip_to_boxes():
+    m = rect_mask(0, 0, 50, 50)
+    assert torch.equal(cm.clip_to_boxes(m, []), m)                                   # no boxes: unchanged
+    out = cm.clip_to_boxes(m, [{"x": 10, "y": 10, "width": 10, "height": 10}, {"x": 40, "y": 0, "width": 5, "height": 5}])
+    assert torch.equal(out, rect_mask(8, 8, 22, 22) | rect_mask(38, 0, 47, 7))     # each grown by at least 2 px
+    assert torch.equal(cm.clip_to_boxes(m, [{"x": 1}]), m)                           # malformed: unchanged
+
+
+def test_runner_sends_points_as_comfyui_sam3_expects(fake_sam3):
+    r = cm.Sam3Runner(types.SimpleNamespace(model=object()), FakeClip(), 0.5, 2)
+    img = torch.rand(H, W, 3)
+    key = cm.image_key(img)
+    m = r.segment_points(img, key, [(120, 55)], [(30, 40), (170, 30)])
+    c = fake_sam3.calls[-1]
+    assert json.loads(c["pos"]) == [{"x": 120, "y": 55}] and json.loads(c["neg"]) == [{"x": 30, "y": 40}, {"x": 170, "y": 30}]
+    assert c["cond"] is None and c["bboxes"] is None and c["shape"] == (1, H, W, 3) and m.shape == (H, W)
+    r.segment_points(img, key, [(1, 2)], [])
+    assert fake_sam3.calls[-1]["neg"] is None
+    n = len(fake_sam3.calls)
+    r.segment_points(img, key, [(120, 55)], [(30, 40), (170, 30)])
+    assert len(fake_sam3.calls) == n                                  # memoised
 
 
 def test_runner_needs_comfyui_sam3(monkeypatch):
@@ -405,6 +506,7 @@ def test_detail_resolution_matches_the_editor():
         d = cm.resolve_detail(box("x", [0, 0, 1, 1], label=case["label"]), case["stored"])
         got = {"enabled": d.enabled, "prompt": d.prompt, "use_box_loras": d.use_box_loras,
                "loras": [list(e) for e in d.loras],
+               "points": [[x, y, 1 if pos else 0] for x, y, pos in d.points],
                "parts": {n: {"on": p.on, "prompt": p.prompt, "denoise": p.denoise} for n, p in d.parts.items()}}
         assert got == case["expected"], case
     assert [p.name for p in cm.PARTS] == ["face", "eyes", "hands", "hair", "skin"]

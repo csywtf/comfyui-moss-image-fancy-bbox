@@ -18,6 +18,7 @@ const NODE_NAME = "MossCharacterMasks";
 const EDITOR_WIDGET = "masks_editor";
 const UI_KEY = "moss_character_masks";
 const POLL_MS = 250;
+const POINT_HIT_PX = 9; // clicking within this many screen px of a point removes it
 const SETTINGS = [
   ["threshold", "Threshold", 0.01, "How confident SAM3 must be to accept a part. Lower finds more."],
   ["box_margin", "Box margin", 0.01, "How far outside each box (as a fraction of its size) to look for its parts."],
@@ -281,7 +282,7 @@ class MasksEditor {
     const { region } = entry;
     this.propsTitle.textContent = `Detail: ${region.name || region.id}`;
     const ro = !this.doc().ok;
-    this.props.replaceChildren(this.boxSection(region), this.lorasSection(region), this.partsSection(region));
+    this.props.replaceChildren(this.boxSection(region), this.pointsSection(region), this.lorasSection(region), this.partsSection(region));
     if (ro) for (const x of this.props.querySelectorAll("input,button,textarea")) x.disabled = true;
   }
 
@@ -324,6 +325,19 @@ class MasksEditor {
       el("div", { class: "mrl-hint", text: region.caption ? `Caption: ${region.caption}` : "This box has no caption; its parts are prompted with the detail prompt and part prompts only." }),
       this.field("Prompt", prompt),
       rb && rb.outline_found === false ? el("div", { class: "mrl-hint", style: "color:#f99", text: "SAM3 found no character in this box; the whole box was used as its outline." }) : null,
+    ]);
+  }
+
+  pointsSection(region) {
+    const pts = this.detailOf(region).points;
+    const plus = pts.filter((p) => p.label).length;
+    return el("div", { class: "mrl-sec" }, [
+      el("div", { class: "mrl-sec-title" }, [
+        el("span", { class: "grow", text: "Points" }),
+        pts.length ? el("button", { icon: "trash-2", text: "Clear", class: "mrl-mini", title: "Remove this box's points", onclick: () => this.updateDetail(region, (d) => (d.points = [])) }) : null,
+      ]),
+      el("div", { class: "mrl-hint", text: "Shift-click the preview on this character's arm or hand (+) to make it hers; Alt-click (−) on something that isn't. Click a point to remove it. Masks update on the next run." }),
+      pts.length ? el("div", { class: "mrl-hint", text: `${plus} + point(s), ${pts.length - plus} − point(s)` }) : null,
     ]);
   }
 
@@ -383,6 +397,33 @@ class MasksEditor {
       el("div", { class: "mcm-parts" }, cells),
       el("div", { class: "mrl-hint", text: "Prompt and denoise are used by the detailer; changing them doesn't re-run SAM3." }),
     ]);
+  }
+
+  drawPoints(g, v) {
+    for (const { region, color } of this.boxes()) {
+      const sel = region.id === this.selected;
+      if (this.selected && !sel) continue; // only the selected box's points (or everyone's when none is)
+      for (const p of this.detailOf(region).points) {
+        const cx = v.ox + p.x * v.W * v.s;
+        const cy = v.oy + p.y * v.H * v.s;
+        g.beginPath();
+        g.arc(cx, cy, 7, 0, Math.PI * 2);
+        g.fillStyle = p.label ? color : "#5a1d1d";
+        g.fill();
+        g.lineWidth = 2;
+        g.strokeStyle = p.label ? "#fff" : "#f66";
+        g.stroke();
+        g.beginPath();
+        g.moveTo(cx - 3.5, cy);
+        g.lineTo(cx + 3.5, cy);
+        if (p.label) {
+          g.moveTo(cx, cy - 3.5);
+          g.lineTo(cx, cy + 3.5);
+        }
+        g.strokeStyle = "#fff";
+        g.stroke();
+      }
+    }
   }
 
   // ------------------------------------------------------------------ preview
@@ -447,6 +488,7 @@ class MasksEditor {
         g.globalAlpha = 1;
         g.setLineDash([]);
       }
+      this.drawPoints(g, v);
     }
   }
 
@@ -455,6 +497,20 @@ class MasksEditor {
     const b = this.canvas.getBoundingClientRect();
     const x = (e.clientX - b.left - v.ox) / v.s;
     const y = (e.clientY - b.top - v.oy) / v.s;
+    const region = this.boxes().find(({ region }) => region.id === this.selected)?.region;
+    if (region && this.doc().ok) {
+      const pts = this.detailOf(region).points;
+      // click on one of the selected box's points: remove it
+      const near = pts.findIndex((p) => Math.hypot((p.x * v.W - x) * v.s, (p.y * v.H - y) * v.s) <= POINT_HIT_PX);
+      if (near >= 0) return this.updateDetail(region, (d) => d.points.splice(near, 1));
+      // Shift-click: + (this is hers), Alt-click: - (this isn't)
+      if ((e.shiftKey || e.altKey) && x >= 0 && y >= 0 && x <= v.W && y <= v.H) {
+        e.preventDefault();
+        const label = e.altKey ? 0 : 1;
+        const r3 = (n) => Math.round(n * 1000) / 1000;
+        return this.updateDetail(region, (d) => d.points.push({ x: r3(x / v.W), y: r3(y / v.H), label }));
+      }
+    }
     let hit = null;
     if (this.labels && x >= 0 && y >= 0 && x < this.labels.width && y < this.labels.height) {
       const i = (Math.floor(y) * this.labels.width + Math.floor(x)) * 4;

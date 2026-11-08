@@ -11,7 +11,8 @@ test("settings resolve exactly as the node resolves them (shared fixture)", () =
   for (const c of CASES) {
     const doc = c.stored ? { version: 1, boxes: { x: c.stored } } : D.emptyDoc();
     const d = D.detailFor(doc, { id: "x", label: c.label });
-    assert.deepEqual({ ...d, loras: d.loras.map((e) => [e.lora, e.weight]) }, c.expected, JSON.stringify(c.stored));
+    const norm = { ...d, loras: d.loras.map((e) => [e.lora, e.weight]), points: d.points.map((p) => [p.x, p.y, p.label]) };
+    assert.deepEqual(norm, c.expected, JSON.stringify(c.stored));
   }
   assert.deepEqual(D.PART_NAMES, ["face", "eyes", "hands", "hair", "skin"]);
 });
@@ -26,12 +27,14 @@ test("parse: empty is defaults, bad JSON is an error, unknown fields survive an 
   assert.equal(d.enabled, false);
   d.parts.hands.on = true;
   d.loras.push({ lora: "eye.safetensors", weight: 0.5 });
+  d.points.push({ x: 0.5, y: 0.25, label: 0 });
   const next = D.setDetail(res.doc, "a", d);
   const back = JSON.parse(D.serializeDetail(next));
   assert.equal(back.x_top[0], 1);
   assert.equal(back.boxes.a.x_box, 7);
   assert.equal(back.boxes.a.parts.hands.on, true);
   assert.deepEqual(back.boxes.a.loras, [{ lora: "eye.safetensors", weight: 0.5 }]);
+  assert.deepEqual(back.boxes.a.points, [{ x: 0.5, y: 0.25, label: 0 }]);
   assert.deepEqual(res.doc.boxes.a, { enabled: false, x_box: 7 });            // input untouched
 });
 

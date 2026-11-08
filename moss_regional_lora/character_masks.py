@@ -6,11 +6,14 @@ For every visible box with Detail on:
    matches the box is the character's silhouette; if none matches, SAM3 segments the main object inside
    the box (a box prompt); if that finds nothing too, the box itself stands in. Small holes are filled
    and stray specks removed.
-2. **Ownership**: every pixel inside some outline belongs to the topmost box (last in the layer list)
-   whose outline covers it.
+2. **Points and ownership**: the user's + points on a box (an arm across the other character) add the
+   region SAM3 traces from them to that box's outline, and win over the layer order; its - points remove
+   the region they mark. Otherwise every pixel inside some outline belongs to the topmost box (last in
+   the layer list) whose outline covers it.
 3. **Parts**: on a crop around the box and outline, with every other character's pixels greyed out (so
    SAM3 can only find this character's face, not a neighbour's), SAM3 finds each ticked part by text
-   ("face", "eye", ...), and the results are pasted back. A box's parts keep only pixels it owns, plus
+   ("face", "eye", ...); each mask is kept inside the detector's box for it (so a face stops at the chin
+   instead of running down the neck), and the results are pasted back. A box's parts keep only pixels it owns, plus
    unowned pixels just outside its outline (hair strands, edges); a pixel two boxes could both claim
    goes to the one on top.
 
@@ -87,6 +90,8 @@ class BoxDetail:
     use_box_loras: bool = True
     loras: Tuple[Tuple[str, float], ...] = ()
     parts: Dict[str, PartSettings] = field(default_factory=dict)
+    # (x, y, positive) with x, y as fractions of the image: + "this is this character's", - "this isn't"
+    points: Tuple[Tuple[float, float, bool], ...] = ()
 
     def parts_on(self) -> List[str]:
         return [n for n in PART_NAMES if self.parts.get(n, PartSettings(False)).on]
@@ -147,7 +152,21 @@ def resolve_detail(box: BoxInfo, raw: Optional[dict]) -> BoxDetail:
             parts[n] = PartSettings(on=_bool(p.get("on"), parts[n].on), prompt=_str(p.get("prompt")),
                                     denoise=_denoise(p.get("denoise")))
     return BoxDetail(enabled=_bool(raw.get("enabled"), base.enabled), prompt=_str(raw.get("prompt")),
-                     use_box_loras=_bool(raw.get("use_box_loras"), True), loras=tuple(loras), parts=parts)
+                     use_box_loras=_bool(raw.get("use_box_loras"), True), loras=tuple(loras), parts=parts,
+                     points=_points(raw.get("points")))
+
+
+def _points(value) -> Tuple[Tuple[float, float, bool], ...]:
+    out = []
+    for p in value if isinstance(value, list) else []:
+        if not isinstance(p, dict):
+            continue
+        x, y = p.get("x"), p.get("y")
+        if any(isinstance(v, bool) or not isinstance(v, (int, float)) for v in (x, y)):
+            continue
+        if 0 <= x <= 1 and 0 <= y <= 1:
+            out.append((float(x), float(y), p.get("label", 1) != 0))
+    return tuple(out)
 
 
 # ----------------------------------------------------------------------------- rectangles
@@ -244,6 +263,27 @@ def clean_mask(mask: torch.Tensor, r: int) -> torch.Tensor:
     return m[p:-p, p:-p]
 
 
+def clip_to_boxes(mask: torch.Tensor, boxes, grow: float = 0.08) -> torch.Tensor:
+    """Keep a part's mask inside the boxes SAM3's detector drew for it, each grown by ``grow`` of its size.
+
+    SAM3 refines each detection's mask past the detector's box when the colours carry on (a face mask
+    running down the neck); the box itself stops at the chin. No boxes (none reported): unchanged."""
+    if not boxes:
+        return mask
+    h, w = mask.shape
+    keep = torch.zeros_like(mask)
+    for b in boxes:
+        try:
+            x, y, bw, bh = float(b["x"]), float(b["y"]), float(b["width"]), float(b["height"])
+        except (KeyError, TypeError, ValueError):
+            return mask
+        gx, gy = max(2.0, bw * grow), max(2.0, bh * grow)
+        x0, y0 = max(0, int(x - gx)), max(0, int(y - gy))
+        x1, y1 = min(w, int(round(x + bw + gx))), min(h, int(round(y + bh + gy)))
+        keep[y0:y1, x0:x1] = True
+    return mask & keep
+
+
 def pick_outline(candidates: Sequence[torch.Tensor], rect: Rect) -> Optional[torch.Tensor]:
     """The detected person that best matches the box: mostly inside it and covering a fair part of it.
     None if no detection does (a neighbour reaching into the box doesn't count)."""
@@ -265,16 +305,20 @@ def pick_outline(candidates: Sequence[torch.Tensor], rect: Rect) -> Optional[tor
 
 
 # ----------------------------------------------------------------------------- ownership
-def owner_map(outlines: Sequence[torch.Tensor]) -> torch.Tensor:
-    """For each pixel, the index of the topmost outline covering it (outlines in layer order), or -1."""
+def owner_map(outlines: Sequence[torch.Tensor], claims: Optional[Sequence[Optional[torch.Tensor]]] = None) -> torch.Tensor:
+    """For each pixel, the index of the topmost outline covering it (outlines in layer order), or -1.
+    ``claims`` (pixels the user marked with + points for a box) win over the layer order."""
     owner = torch.full(outlines[0].shape, -1, dtype=torch.int64)
     for i, o in enumerate(outlines):            # later boxes overwrite: topmost wins
         owner[o] = i
+    for i, c in enumerate(claims or []):
+        if c is not None:
+            owner[c] = i
     return owner
 
 
 def assign_parts(outlines: Sequence[torch.Tensor], raw_parts: Sequence[Dict[str, torch.Tensor]],
-                 grow: Sequence[int]) -> List[Dict[str, torch.Tensor]]:
+                 grow: Sequence[int], owner: Optional[torch.Tensor] = None) -> List[Dict[str, torch.Tensor]]:
     """Keep each box's part masks to what it owns. ``outlines`` are in layer order (last = on top).
 
     A pixel inside outlines belongs to the topmost box covering it. A box's part may use pixels it owns
@@ -283,7 +327,7 @@ def assign_parts(outlines: Sequence[torch.Tensor], raw_parts: Sequence[Dict[str,
     if not outlines:
         return []
     shape = outlines[0].shape
-    owner = owner_map(outlines)
+    owner = owner_map(outlines) if owner is None else owner
     out: List[Dict[str, torch.Tensor]] = []
     for i, (o, parts) in enumerate(zip(outlines, raw_parts)):
         allowed = dilate(o, grow[i]) & ((owner == i) | (owner == -1))
@@ -320,6 +364,7 @@ class FrameMasks:
     width: int
     height: int
     boxes: List[CharacterMask]
+    owner: Optional[torch.Tensor] = None        # int64 [H, W]: index into boxes owning each pixel, -1 none
 
 
 @dataclass
@@ -363,12 +408,18 @@ class Sam3Runner:
         self._conds: Dict[str, object] = {}
         self._model_id = id(getattr(model, "model", model))
 
-    def _run(self, image, individual=False, **kw) -> torch.Tensor:
-        """bool [h, w] (all detections as one mask), or [N, h, w] with ``individual``."""
+    def _run(self, image, individual=False, with_boxes=False, **kw):
+        """bool [h, w] (all detections as one mask), or [N, h, w] with ``individual``; with ``with_boxes``,
+        also the detector's boxes ({x, y, width, height} in ``image`` pixels)."""
         out = self._detect.execute(self.model, image[None], threshold=self.threshold,
                                    refine_iterations=self.refine, individual_masks=individual, **kw)
-        masks = out.args[0] if hasattr(out, "args") else out[0]
-        return masks.detach().cpu() > 0.5 if individual else masks[0].detach().cpu() > 0.5
+        args = out.args if hasattr(out, "args") else tuple(out)
+        masks = args[0].detach().cpu() > 0.5
+        masks = masks if individual else masks[0]
+        if not with_boxes:
+            return masks
+        boxes = args[1][0] if len(args) > 1 and args[1] else []
+        return masks, boxes
 
     def _cond(self, prompt):
         if prompt not in self._conds:
@@ -403,11 +454,20 @@ class Sam3Runner:
             return full
         return list(self._memo((img_key, "person", crop), run))
 
+    def segment_points(self, image: torch.Tensor, img_key: str, positive, negative) -> torch.Tensor:
+        """The region SAM3 traces from point prompts ([(x, y)] pixels of ``image``): bool [H, W]."""
+        pos = [{"x": int(x), "y": int(y)} for x, y in positive]
+        neg = [{"x": int(x), "y": int(y)} for x, y in negative]
+        return self._memo((img_key, "points", tuple(map(tuple, positive)), tuple(map(tuple, negative))),
+                          lambda: self._run(image, positive_coords=json.dumps(pos),
+                                            negative_coords=json.dumps(neg) if neg else None))
+
     def find(self, image: torch.Tensor, img_key: str, crop: Rect, prompt: str) -> torch.Tensor:
         """``prompt`` found inside ``crop`` of ``image``: bool [H, W] (zero outside the crop)."""
         def run():
             x0, y0, x1, y1 = crop
-            m = self._run(image[y0:y1, x0:x1], conditioning=self._cond(prompt))
+            m, boxes = self._run(image[y0:y1, x0:x1], with_boxes=True, conditioning=self._cond(prompt))
+            m = clip_to_boxes(m, boxes)
             full = torch.zeros(image.shape[0], image.shape[1], dtype=torch.bool)
             full[y0:y1, x0:x1] = m
             return full
@@ -443,7 +503,8 @@ def mask_frame(image: torch.Tensor, boxes: Sequence[BoxInfo], details: Dict[str,
         todo.append((b, d, rect, outline, found))
     if not todo:
         return FrameMasks(W, H, [])
-    owner = owner_map([t[3] for t in todo])
+    claims = apply_points(image, key, todo, runner)
+    owner = owner_map([t[3] for t in todo], claims)
     raws = []
     for i, (b, d, rect, outline, _) in enumerate(todo):    # 2. parts, other characters greyed out
         crop = crop_rect(union_rect(rect, mask_rect(outline)), margin, (W, H))
@@ -456,13 +517,41 @@ def mask_frame(image: torch.Tensor, boxes: Sequence[BoxInfo], details: Dict[str,
         else:
             view, vkey = image, key
         raws.append({n: runner.find(view, vkey, crop, PART_BY_NAME[n].sam3_prompt) for n in d.parts_on()})
-    owned = assign_parts([t[3] for t in todo], raws, [grow_radius(t[2]) for t in todo])
+    owned = assign_parts([t[3] for t in todo], raws, [grow_radius(t[2]) for t in todo], owner)
     out = []
     for (b, d, rect, outline, found), parts in zip(todo, owned):
         out.append(CharacterMask(id=b.id, name=b.name, label=b.label, caption=b.caption, color=b.color,
                                  loras=b.loras, detail=d, rect=rect, outline=outline, outline_found=found,
                                  parts=parts, found={n: bool(m.any()) for n, m in parts.items()}))
-    return FrameMasks(W, H, out)
+    return FrameMasks(W, H, out, owner)
+
+
+def apply_points(image, key, todo, runner) -> List[Optional[torch.Tensor]]:
+    """The user's points, per box: SAM3 traces the region at the box's + points (with its - points and
+    every other box's + points as negatives) and adds it to the outline as a claim; the region at its
+    - points is removed from the outline. Updates ``todo`` outlines in place; returns the claims."""
+    H, W = int(image.shape[0]), int(image.shape[1])
+    px = lambda p: (min(W - 1, round(p[0] * W)), min(H - 1, round(p[1] * H)))
+    plus = [[px(p) for p in t[1].points if p[2]] for t in todo]
+    minus = [[px(p) for p in t[1].points if not p[2]] for t in todo]
+    claims: List[Optional[torch.Tensor]] = []
+    for i, t in enumerate(todo):
+        outline, claim = t[3], None
+        others = [q for j, ps in enumerate(plus) if j != i for q in ps]
+        if plus[i]:
+            claim = runner.segment_points(image, key, plus[i], minus[i] + others)
+            claim = clean_mask(claim, clean_radius(t[2])) if claim.any() else None
+            if claim is not None:
+                outline = outline | claim
+        if minus[i]:
+            drop = runner.segment_points(image, key, minus[i], plus[i])
+            if drop.any():
+                outline = outline & ~drop
+                if claim is not None:
+                    claim = claim & ~drop
+        todo[i] = (t[0], t[1], t[2], outline, t[4])
+        claims.append(claim)
+    return claims
 
 
 def compute(images: torch.Tensor, regions: str, detail: str, runner, margin: float) -> CharacterMasks:
@@ -513,10 +602,15 @@ def label_map(frame: FrameMasks):
     H, W = frame.height, frame.width
     out = np.zeros((H, W, 4), dtype=np.uint8)
     out[..., 3] = 255
-    for i, b in enumerate(frame.boxes):
-        o = b.outline.numpy()                       # later boxes overwrite: topmost wins, as in ownership
-        out[o, 0] = i + 1
-        out[o, 2] = 255
+    if frame.owner is not None:
+        own = frame.owner.numpy()
+        out[own >= 0, 0] = (own[own >= 0] + 1).astype(np.uint8)
+        out[own >= 0, 2] = 255
+    else:
+        for i, b in enumerate(frame.boxes):
+            o = b.outline.numpy()                   # later boxes overwrite: topmost wins, as in ownership
+            out[o, 0] = i + 1
+            out[o, 2] = 255
     for i, b in enumerate(frame.boxes):
         bits = np.zeros((H, W), dtype=np.uint8)
         for k, n in enumerate(PART_NAMES):

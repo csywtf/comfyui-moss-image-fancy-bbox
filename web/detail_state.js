@@ -22,7 +22,15 @@ const DEFAULT_ON = ["face", "eyes"];
 export function defaultDetail(label) {
   const parts = {};
   for (const n of PART_NAMES) parts[n] = { on: DEFAULT_ON.includes(n), prompt: "", denoise: null };
-  return { enabled: label === "character", prompt: "", use_box_loras: true, loras: [], parts };
+  return { enabled: label === "character", prompt: "", use_box_loras: true, loras: [], parts, points: [] };
+}
+
+/** Points: {x, y} as fractions of the image, label 1 ("this is this character's") or 0 ("this isn't"). */
+function readPoints(value) {
+  if (!Array.isArray(value)) return [];
+  return value
+    .filter((p) => p && typeof p === "object" && isNum(p.x) && isNum(p.y) && p.x >= 0 && p.x <= 1 && p.y >= 0 && p.y <= 1)
+    .map((p) => ({ x: p.x, y: p.y, label: p.label === 0 ? 0 : 1 }));
 }
 
 export function emptyDoc() {
@@ -72,6 +80,7 @@ export function detailFor(doc, region) {
     use_box_loras: typeof raw.use_box_loras === "boolean" ? raw.use_box_loras : true,
     loras,
     parts,
+    points: readPoints(raw.points),
   };
 }
 
@@ -84,7 +93,10 @@ export function setDetail(doc, id, detail) {
     ...doc,
     boxes: {
       ...doc.boxes,
-      [id]: { ...prev, enabled: detail.enabled, prompt: detail.prompt, use_box_loras: detail.use_box_loras, loras: detail.loras.map((e) => ({ ...e })), parts },
+      [id]: {
+        ...prev, enabled: detail.enabled, prompt: detail.prompt, use_box_loras: detail.use_box_loras,
+        loras: detail.loras.map((e) => ({ ...e })), parts, points: (detail.points || []).map((p) => ({ ...p })),
+      },
     },
   };
 }

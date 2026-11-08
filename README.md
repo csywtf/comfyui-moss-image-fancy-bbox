@@ -221,13 +221,25 @@ and loaded with the normal **Load Checkpoint** node (its MODEL to `sam3_model`, 
    (mostly inside it, covering a fair part of it) is the character's silhouette. If none matches, SAM3
    segments the main object inside the box instead; if that finds nothing too, the box itself is used
    (the editor says so). Small holes are filled and stray specks removed.
-2. **Overlaps:** a pixel inside two outlines belongs to the box higher in the layer list (on top).
+2. **Overlaps:** a pixel inside two outlines belongs to the box higher in the layer list (on top),
+   unless you've marked it with a point (below).
 3. **Parts:** SAM3 looks for each ticked part by name (`face`, `eye`, `hand`, `hair`, `skin`) on a crop
    around the character, with every other character greyed out, so it can't pick a neighbour's face in
-   a hug. A part keeps only its own character's pixels, plus a few just outside the outline (stray hair,
-   edges).
+   a hug. Each part's mask stays inside the box SAM3's detector drew for it (plus a little), so a face
+   stops at the chin instead of running down the neck. A part keeps only its own character's pixels,
+   plus a few just outside the outline (stray hair, edges).
 
 If the image isn't the canvas size (an upscaled image), the boxes are scaled to it.
+
+**Points (whose arm is it?):** in a hug, an arm lying across the other character often ends up in the
+wrong outline or only partly in either. Select the box, then **Shift-click** the preview on that
+character's arm or hand: a **+** point. SAM3 traces the region at the point and adds it to her outline,
+and it's hers even where another box is on top. **Alt-click** puts a **−** point on something that isn't
+hers; that region is removed from her outline. Click a point to remove it; **Clear** removes them all.
+A point needs no type: SAM3 works out the region from where you click (add a second point if it only
+takes the sleeve). Each box's + points also count as − points for every other box. Points are stored as
+fractions of the image, and skin and hands then follow the corrected outlines. Like any detail setting,
+they re-run only this node, not the image.
 
 **The editor** (all of the node's inputs are hidden and set here):
 
