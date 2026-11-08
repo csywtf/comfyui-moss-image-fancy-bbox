@@ -389,8 +389,21 @@ def test_grid_inputs_removed_and_read_from_the_model(fake_comfy, monkeypatch):
 def test_width_and_height_outputs(fake_comfy, monkeypatch):
     """The canvas size is passed on so the empty latent node can take it and stay in sync."""
     patcher, node = fake_comfy
-    assert node.MossRegionalLora.RETURN_TYPES == ("MODEL", "STRING", "INT", "INT")
-    assert node.MossRegionalLora.RETURN_NAMES[2:] == ("width", "height")
+    assert node.MossRegionalLora.RETURN_TYPES[:4] == ("MODEL", "STRING", "INT", "INT")
+    assert node.MossRegionalLora.RETURN_NAMES[2:4] == ("width", "height")
     set_layout(monkeypatch)
     for regions in (regions_json((FULL, 1.0)), json.dumps({"version": 2, "regions": []})):   # active / prompt-only
-        assert apply(node, patcher, regions, width=toy.W, height=toy.H)["result"][2:] == (toy.W, toy.H)
+        assert apply(node, patcher, regions, width=toy.W, height=toy.H)["result"][2:4] == (toy.W, toy.H)
+
+
+def test_regions_output_carries_the_boxes_and_canvas(fake_comfy, monkeypatch):
+    """The regions output is the editor JSON (unknown fields kept) plus the canvas size, appended last."""
+    patcher, node = fake_comfy
+    assert node.MossRegionalLora.RETURN_NAMES[-1] == "regions"
+    set_layout(monkeypatch)
+    regions = json.dumps({"version": 2, "regions": [{"id": "a", "bbox": list(FULL), "x_extra": 1,
+                                                     "loras": [{"lora": LORA_NAME, "weight": 1}]}]})
+    for text in (regions, json.dumps({"version": 2, "regions": []})):      # active / prompt-only
+        out = json.loads(apply(node, patcher, text, width=toy.W, height=toy.H)["result"][4])
+        assert out["canvas"] == {"width": toy.W, "height": toy.H}
+        assert out["regions"] == json.loads(text)["regions"]

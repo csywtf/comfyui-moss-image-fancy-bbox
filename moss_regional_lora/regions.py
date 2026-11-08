@@ -36,7 +36,7 @@ from __future__ import annotations
 
 import json
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import List, Optional, Tuple
 
 from .curve import CurveError, CurvePoint, parse_curve
@@ -44,6 +44,9 @@ from .geometry import GeometryError, validate_bbox
 
 SCHEMA_VERSION = 2
 LABELS = ("object", "character", "text")
+# the editor's default layer colours (web/state.js PALETTE), for boxes without their own colour
+PALETTE = ("#e6194b", "#3cb44b", "#4363d8", "#f58231", "#911eb4", "#42d4f4",
+           "#f032e6", "#bfef45", "#469990", "#9a6324", "#800000", "#000075")
 MAX_PALETTE = 5   # Create Bounding Boxes keeps at most five colours per box
 
 
@@ -71,11 +74,24 @@ class PromptItem:
     palette: Tuple[str, ...]
 
 
+@dataclass(frozen=True)
+class BoxInfo:
+    """One visible box, whatever it does: what the masking and detailing nodes need to know about it."""
+    id: str
+    name: str
+    bbox: Tuple[float, float, float, float]
+    label: str
+    caption: str
+    color: str
+    loras: Tuple[Tuple[str, float], ...]     # (file, weight) of the active entries, in list order
+
+
 @dataclass
 class ParsedRegions:
     loras: List[RegionSpec]
     prompt_items: List[PromptItem]
     notes: List[str]
+    boxes: List[BoxInfo] = field(default_factory=list)   # every visible box, in list order
 
 
 def parse_regions(text: str) -> Tuple[List[RegionSpec], List[str]]:
@@ -128,6 +144,7 @@ def parse_document(text: str) -> ParsedRegions:
 
     out: List[RegionSpec] = []
     items: List[PromptItem] = []
+    boxes: List[BoxInfo] = []
     for i, r in enumerate(raw):
         if not isinstance(r, dict):
             raise RegionsError(f"region {i} is not an object")
@@ -151,6 +168,9 @@ def parse_document(text: str) -> ParsedRegions:
             items.append(PromptItem(name=name, bbox=bbox, label=label, caption=caption, text=render, palette=palette))
 
         active = [e for e in entries if e[0] and e[1] != 0]
+        color = r.get("color") if isinstance(r.get("color"), str) and r.get("color") else PALETTE[i % len(PALETTE)]
+        boxes.append(BoxInfo(id=str(r.get("id") or f"r{i}"), name=name, bbox=bbox, label=label, caption=caption,
+                             color=color, loras=tuple((e[0], e[1]) for e in active)))
         if not active and not has_prompt:
             notes.append(f"region '{name}' has neither a LoRA nor a caption; it does nothing")
         for lora, weight, curve in entries:
@@ -163,7 +183,7 @@ def parse_document(text: str) -> ParsedRegions:
                 continue
             # one spec per (box, LoRA): each gets its own mask copy and its own curve
             out.append(RegionSpec(index=len(out), name=name, bbox=bbox, lora=lora, weight=weight, curve=curve))
-    return ParsedRegions(out, items, notes)
+    return ParsedRegions(out, items, notes, boxes)
 
 
 def _lora_entry(e, where) -> Tuple[str, float, Optional[Tuple[CurvePoint, ...]]]:

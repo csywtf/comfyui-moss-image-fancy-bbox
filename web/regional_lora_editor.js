@@ -143,7 +143,7 @@ const CSS = `
 .mrl-json-error{color:#f88;white-space:pre-wrap}
 `;
 
-function injectCss() {
+export function injectCss() {
   let s = document.getElementById("mrl-css");
   if (!s) {
     s = document.createElement("style");
@@ -154,7 +154,7 @@ function injectCss() {
 }
 
 // attrs.icon: a Lucide icon name, placed before attrs.text (an icon-only control needs a title)
-function el(tag, attrs = {}, children = []) {
+export function el(tag, attrs = {}, children = []) {
   const e = document.createElement(tag);
   for (const [k, v] of Object.entries(attrs)) {
     if (k === "class") e.className = v;
@@ -184,7 +184,7 @@ export function loraDisplayName(path) {
 }
 
 const loraListPromise = { p: null };
-function loraList() {
+export function loraList() {
   if (!loraListPromise.p) {
     loraListPromise.p = api
       .fetchApi("/models/loras")

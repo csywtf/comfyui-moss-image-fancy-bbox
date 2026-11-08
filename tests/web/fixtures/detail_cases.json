@@ -1,0 +1,24 @@
+{
+  "comment": "Shared by tests/test_character_masks.py and tests/web/detail_state.test.mjs: both sides must resolve these the same way.",
+  "cases": [
+    {"label": "character", "stored": null,
+     "expected": {"enabled": true, "prompt": "", "use_box_loras": true, "loras": [],
+                  "parts": {"face": {"on": true, "prompt": "", "denoise": null}, "eyes": {"on": true, "prompt": "", "denoise": null},
+                            "hands": {"on": false, "prompt": "", "denoise": null}, "hair": {"on": false, "prompt": "", "denoise": null},
+                            "skin": {"on": false, "prompt": "", "denoise": null}}}},
+    {"label": "object", "stored": null,
+     "expected": {"enabled": false, "prompt": "", "use_box_loras": true, "loras": [],
+                  "parts": {"face": {"on": true, "prompt": "", "denoise": null}, "eyes": {"on": true, "prompt": "", "denoise": null},
+                            "hands": {"on": false, "prompt": "", "denoise": null}, "hair": {"on": false, "prompt": "", "denoise": null},
+                            "skin": {"on": false, "prompt": "", "denoise": null}}}},
+    {"label": "object",
+     "stored": {"enabled": true, "prompt": "green eyes", "use_box_loras": false, "loras": [{"lora": "eye.safetensors", "weight": 0.6}],
+                "parts": {"eyes": {"on": false}, "hands": {"on": true, "prompt": "five fingers", "denoise": 0.5},
+                          "skin": {"on": "yes", "denoise": 3}, "tail": {"on": true}},
+                "x_unknown": 1},
+     "expected": {"enabled": true, "prompt": "green eyes", "use_box_loras": false, "loras": [["eye.safetensors", 0.6]],
+                  "parts": {"face": {"on": true, "prompt": "", "denoise": null}, "eyes": {"on": false, "prompt": "", "denoise": null},
+                            "hands": {"on": true, "prompt": "five fingers", "denoise": 0.5}, "hair": {"on": false, "prompt": "", "denoise": null},
+                            "skin": {"on": false, "prompt": "", "denoise": 1}}}}
+  ]
+}
