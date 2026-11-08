@@ -2,13 +2,17 @@
 
 For every visible box with Detail on:
 
-1. **Outline**: SAM3 segments the main object inside the box (a box prompt), giving the character's
-   silhouette. If it finds nothing, the box itself stands in for the outline.
-2. **Parts**: on a crop around the box and outline (more pixels for small faces), SAM3 finds each
-   ticked part by text ("face", "eye:2", ...), and the results are pasted back.
-3. **Ownership**: every pixel inside some outline belongs to the topmost box (last in the layer list)
-   whose outline covers it. A box's parts keep only pixels it owns, plus unowned pixels just outside its
-   outline (hair strands, edges); a pixel two boxes could both claim goes to the one on top.
+1. **Outline**: SAM3's detector looks for people around the box ("person") and the detection that best
+   matches the box is the character's silhouette; if none matches, SAM3 segments the main object inside
+   the box (a box prompt); if that finds nothing too, the box itself stands in. Small holes are filled
+   and stray specks removed.
+2. **Ownership**: every pixel inside some outline belongs to the topmost box (last in the layer list)
+   whose outline covers it.
+3. **Parts**: on a crop around the box and outline, with every other character's pixels greyed out (so
+   SAM3 can only find this character's face, not a neighbour's), SAM3 finds each ticked part by text
+   ("face", "eye", ...), and the results are pasted back. A box's parts keep only pixels it owns, plus
+   unowned pixels just outside its outline (hair strands, edges); a pixel two boxes could both claim
+   goes to the one on top.
 
 The detail settings (which parts, prompts, denoise, detail LoRAs) live on this node, not in the main
 node's regions, so changing them never invalidates the generated image in ComfyUI's cache.
@@ -47,13 +51,17 @@ class Part:
 
 # Listed in the editor's order. The detailer works coarse to fine (DETAIL_ORDER).
 PARTS: Tuple[Part, ...] = (
-    Part("face", "face:1", "detailed face", "#ff9f1c"),
-    Part("eyes", "eye:2", "detailed eyes", "#2ec4ff"),
-    Part("hands", "hand:2", "detailed hands", "#3ddc84"),
-    Part("hair", "hair:1", "detailed hair", "#b77dff"),
-    Part("skin", "skin:4", "detailed skin", "#ffe14d"),
+# A few more detections than one character has: ownership trims the extras, and a false positive that
+# outscores the real part can't push it out.
+    Part("face", "face:2", "detailed face", "#ff9f1c"),
+    Part("eyes", "eye:4", "detailed eyes", "#2ec4ff"),
+    Part("hands", "hand:4", "detailed hands", "#3ddc84"),
+    Part("hair", "hair:2", "detailed hair", "#b77dff"),
+    Part("skin", "skin:6", "detailed skin", "#ffe14d"),
 )
 PART_NAMES = tuple(p.name for p in PARTS)
+PERSON_PROMPT = "person:4"
+NEUTRAL = 0.5        # what other characters' pixels are replaced with while looking for a character's parts
 PART_BY_NAME = {p.name: p for p in PARTS}
 DETAIL_ORDER = ("skin", "hair", "face", "hands", "eyes")
 DEFAULT_PARTS_ON = ("face", "eyes")
@@ -208,11 +216,63 @@ def dilate(mask: torch.Tensor, r: int) -> torch.Tensor:
     return F.max_pool2d(m, 2 * r + 1, stride=1, padding=r)[0, 0] > 0
 
 
+def erode(mask: torch.Tensor, r: int) -> torch.Tensor:
+    """Shrink by ``r`` px (outside the array counts as background)."""
+    if r <= 0:
+        return mask
+    bg = F.pad((~mask)[None, None].float(), (r, r, r, r), value=1.0)
+    return ~(F.max_pool2d(bg, 2 * r + 1, stride=1)[0, 0] > 0)
+
+
 def grow_radius(rect: Rect) -> int:
     return max(2, round(0.02 * max(rect[2] - rect[0], rect[3] - rect[1])))
 
 
+def clean_radius(rect: Rect) -> int:
+    return max(2, round(0.01 * max(rect[2] - rect[0], rect[3] - rect[1])))
+
+
+def clean_mask(mask: torch.Tensor, r: int) -> torch.Tensor:
+    """Fill holes and gaps up to ``r`` px (closing), then drop specks one pixel wide (opening).
+
+    Done on a copy padded with empty space, so the image edge plays no part: a mask near the edge
+    neither creeps out to it nor loses the rows that touch it."""
+    p = r + 2
+    m = F.pad(mask[None, None].float(), (p, p, p, p))[0, 0] > 0
+    m = erode(dilate(m, r), r)
+    m = dilate(erode(m, 1), 1)
+    return m[p:-p, p:-p]
+
+
+def pick_outline(candidates: Sequence[torch.Tensor], rect: Rect) -> Optional[torch.Tensor]:
+    """The detected person that best matches the box: mostly inside it and covering a fair part of it.
+    None if no detection does (a neighbour reaching into the box doesn't count)."""
+    x0, y0, x1, y1 = rect
+    area = (x1 - x0) * (y1 - y0)
+    best, best_score = None, 0.0
+    for m in candidates:
+        total = int(m.sum())
+        if not total:
+            continue
+        inside = int(m[y0:y1, x0:x1].sum())
+        inside_frac, cover = inside / total, inside / area
+        if inside_frac < 0.5 or cover < 0.1:
+            continue
+        score = inside_frac * cover
+        if score > best_score:
+            best, best_score = m, score
+    return best
+
+
 # ----------------------------------------------------------------------------- ownership
+def owner_map(outlines: Sequence[torch.Tensor]) -> torch.Tensor:
+    """For each pixel, the index of the topmost outline covering it (outlines in layer order), or -1."""
+    owner = torch.full(outlines[0].shape, -1, dtype=torch.int64)
+    for i, o in enumerate(outlines):            # later boxes overwrite: topmost wins
+        owner[o] = i
+    return owner
+
+
 def assign_parts(outlines: Sequence[torch.Tensor], raw_parts: Sequence[Dict[str, torch.Tensor]],
                  grow: Sequence[int]) -> List[Dict[str, torch.Tensor]]:
     """Keep each box's part masks to what it owns. ``outlines`` are in layer order (last = on top).
@@ -223,9 +283,7 @@ def assign_parts(outlines: Sequence[torch.Tensor], raw_parts: Sequence[Dict[str,
     if not outlines:
         return []
     shape = outlines[0].shape
-    owner = torch.full(shape, -1, dtype=torch.int64)
-    for i, o in enumerate(outlines):            # later boxes overwrite: topmost wins
-        owner[o] = i
+    owner = owner_map(outlines)
     out: List[Dict[str, torch.Tensor]] = []
     for i, (o, parts) in enumerate(zip(outlines, raw_parts)):
         allowed = dilate(o, grow[i]) & ((owner == i) | (owner == -1))
@@ -305,11 +363,17 @@ class Sam3Runner:
         self._conds: Dict[str, object] = {}
         self._model_id = id(getattr(model, "model", model))
 
-    def _run(self, image, **kw) -> torch.Tensor:
+    def _run(self, image, individual=False, **kw) -> torch.Tensor:
+        """bool [h, w] (all detections as one mask), or [N, h, w] with ``individual``."""
         out = self._detect.execute(self.model, image[None], threshold=self.threshold,
-                                   refine_iterations=self.refine, individual_masks=False, **kw)
+                                   refine_iterations=self.refine, individual_masks=individual, **kw)
         masks = out.args[0] if hasattr(out, "args") else out[0]
-        return masks[0].detach().cpu() > 0.5
+        return masks.detach().cpu() > 0.5 if individual else masks[0].detach().cpu() > 0.5
+
+    def _cond(self, prompt):
+        if prompt not in self._conds:
+            self._conds[prompt] = self.clip.encode_from_tokens_scheduled(self.clip.tokenize(prompt))
+        return self._conds[prompt]
 
     def _memo(self, key, fn):
         key = (self._model_id, self.threshold, self.refine) + key
@@ -329,13 +393,21 @@ class Sam3Runner:
         box = {"x": x0, "y": y0, "width": x1 - x0, "height": y1 - y0}
         return self._memo((img_key, "box", rect), lambda: self._run(image, bboxes=[box]))
 
+    def persons(self, image: torch.Tensor, img_key: str, crop: Rect) -> List[torch.Tensor]:
+        """Each person SAM3's detector finds inside ``crop``: bool [H, W] masks (zero outside the crop)."""
+        def run():
+            x0, y0, x1, y1 = crop
+            ms = self._run(image[y0:y1, x0:x1], individual=True, conditioning=self._cond(PERSON_PROMPT))
+            full = torch.zeros(ms.shape[0], image.shape[0], image.shape[1], dtype=torch.bool)
+            full[:, y0:y1, x0:x1] = ms
+            return full
+        return list(self._memo((img_key, "person", crop), run))
+
     def find(self, image: torch.Tensor, img_key: str, crop: Rect, prompt: str) -> torch.Tensor:
         """``prompt`` found inside ``crop`` of ``image``: bool [H, W] (zero outside the crop)."""
         def run():
             x0, y0, x1, y1 = crop
-            if prompt not in self._conds:
-                self._conds[prompt] = self.clip.encode_from_tokens_scheduled(self.clip.tokenize(prompt))
-            m = self._run(image[y0:y1, x0:x1], conditioning=self._conds[prompt])
+            m = self._run(image[y0:y1, x0:x1], conditioning=self._cond(prompt))
             full = torch.zeros(image.shape[0], image.shape[1], dtype=torch.bool)
             full[y0:y1, x0:x1] = m
             return full
@@ -350,7 +422,7 @@ def mask_frame(image: torch.Tensor, boxes: Sequence[BoxInfo], details: Dict[str,
     canvas = canvas or (W, H)
     key = image_key(image)
     todo = []
-    for b in boxes:
+    for b in boxes:                              # 1. outlines
         d = details[b.id]
         if not d.enabled:
             continue
@@ -358,17 +430,35 @@ def mask_frame(image: torch.Tensor, boxes: Sequence[BoxInfo], details: Dict[str,
         if rect is None:
             log.info("[MOSS Character Masks] box '%s' is outside the image; skipped", b.name)
             continue
-        outline = runner.segment_box(image, key, rect)
-        found = bool(outline.any())
-        if not found:
+        outline = pick_outline(runner.persons(image, key, crop_rect(rect, margin, (W, H))), rect)
+        if outline is None:
+            seg = runner.segment_box(image, key, rect)
+            outline = seg if seg.any() else None
+        found = outline is not None
+        if found:
+            outline = clean_mask(outline, clean_radius(rect))
+        else:
             outline = torch.zeros(H, W, dtype=torch.bool)
             outline[rect[1]:rect[3], rect[0]:rect[2]] = True
+        todo.append((b, d, rect, outline, found))
+    if not todo:
+        return FrameMasks(W, H, [])
+    owner = owner_map([t[3] for t in todo])
+    raws = []
+    for i, (b, d, rect, outline, _) in enumerate(todo):    # 2. parts, other characters greyed out
         crop = crop_rect(union_rect(rect, mask_rect(outline)), margin, (W, H))
-        raw = {n: runner.find(image, key, crop, PART_BY_NAME[n].sam3_prompt) for n in d.parts_on()}
-        todo.append((b, d, rect, outline, found, raw))
-    owned = assign_parts([t[3] for t in todo], [t[5] for t in todo], [grow_radius(t[2]) for t in todo])
+        others = (owner != i) & (owner != -1)
+        x0, y0, x1, y1 = crop
+        if others[y0:y1, x0:x1].any():
+            view = image.clone()
+            view[others] = NEUTRAL
+            vkey = image_key(view[y0:y1, x0:x1])
+        else:
+            view, vkey = image, key
+        raws.append({n: runner.find(view, vkey, crop, PART_BY_NAME[n].sam3_prompt) for n in d.parts_on()})
+    owned = assign_parts([t[3] for t in todo], raws, [grow_radius(t[2]) for t in todo])
     out = []
-    for (b, d, rect, outline, found, _), parts in zip(todo, owned):
+    for (b, d, rect, outline, found), parts in zip(todo, owned):
         out.append(CharacterMask(id=b.id, name=b.name, label=b.label, caption=b.caption, color=b.color,
                                  loras=b.loras, detail=d, rect=rect, outline=outline, outline_found=found,
                                  parts=parts, found={n: bool(m.any()) for n, m in parts.items()}))

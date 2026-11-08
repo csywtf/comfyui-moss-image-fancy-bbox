@@ -32,11 +32,33 @@ def centred(x0, y0, x1, y1, w=W, h=H):
 
 
 class FakeRunner:
-    """segment_box: the box shrunk by 2 px (or nothing for ids in `lost`). find: the scene's rectangles for
-    that prompt, clipped to the crop. Records calls."""
+    """A SAM3 stand-in over a scene of rectangles, keyed by part name ("face", "eye", "person", ...), each
+    list in detection-score order.
+
+    persons / find: like SAM3 with "name:N", the first N detections that are inside the crop and visible
+    (not greyed out to NEUTRAL in the image it is given). segment_box: the box shrunk by 2 px, or nothing
+    for rects in ``lost``. Records calls."""
 
     def __init__(self, scene, lost=()):
         self.scene, self.lost, self.calls = scene, set(lost), []
+
+    def _detections(self, image, crop, prompt):
+        name, _, n = prompt.partition(":")
+        n = int(n or 1)
+        x0, y0, x1, y1 = crop
+        hits = []
+        for r in self.scene.get(name, []):
+            m = rect_mask(*r, image.shape[0], image.shape[1])
+            inside = torch.zeros_like(m)
+            inside[y0:y1, x0:x1] = m[y0:y1, x0:x1]
+            visible = inside & ~(image[..., :3] == cm.NEUTRAL).all(dim=-1)
+            if visible.any():
+                hits.append(visible)
+        return hits[:n]
+
+    def persons(self, image, key, crop):
+        self.calls.append(("person", crop))
+        return self._detections(image, crop, cm.PERSON_PROMPT)
 
     def segment_box(self, image, key, rect):
         self.calls.append(("box", rect))
@@ -46,13 +68,10 @@ class FakeRunner:
         return rect_mask(x0 + 2, y0 + 2, x1 - 2, y1 - 2, image.shape[0], image.shape[1])
 
     def find(self, image, key, crop, prompt):
-        self.calls.append(("find", crop, prompt))
-        m = torch.zeros(image.shape[0], image.shape[1], dtype=torch.bool)
-        for r in self.scene.get(prompt, []):
-            m |= rect_mask(*r, image.shape[0], image.shape[1])
-        x0, y0, x1, y1 = crop
-        out = torch.zeros_like(m)
-        out[y0:y1, x0:x1] = m[y0:y1, x0:x1]
+        self.calls.append(("find", crop, prompt, image.clone()))
+        out = torch.zeros(image.shape[0], image.shape[1], dtype=torch.bool)
+        for m in self._detections(image, crop, prompt):
+            out |= m
         return out
 
 
@@ -150,8 +169,8 @@ def frame_setup():
     boxes = [box("alice", centred(10, 10, 110, 90), color="#e6194b"),
              box("bob", centred(80, 10, 180, 90), color="#3cb44b"),
              box("lamp", centred(185, 5, 199, 30), label="object")]
-    scene = {"face:1": [(30, 20, 50, 40), (120, 20, 140, 40)], "eye:2": [(33, 25, 37, 28), (43, 25, 47, 28)],
-             "hand:2": [(15, 70, 25, 85)]}
+    scene = {"face": [(30, 20, 50, 40), (120, 20, 140, 40)], "eye": [(33, 25, 37, 28), (43, 25, 47, 28)],
+             "hand": [(15, 70, 25, 85)]}
     return boxes, scene
 
 
@@ -174,7 +193,8 @@ def test_mask_frame_finds_ticked_parts_per_character():
     assert torch.equal(bob.parts["face"], rect_mask(120, 20, 140, 40))
     assert alice.caption == "alice caption" and alice.detail.parts_on() == ["face", "eyes", "hands"]
     # SAM3 asked once per box for the outline, then once per ticked part, on a crop around the box
-    assert [c[0] for c in runner.calls].count("box") == 2
+    # no person detected in this scene: each box falls back to SAM3's box prompt
+    assert [c[0] for c in runner.calls].count("person") == 2 and [c[0] for c in runner.calls].count("box") == 2
     finds = [c for c in runner.calls if c[0] == "find"]
     assert len(finds) == 5
     for c, r in zip(finds, [alice.rect] * 3 + [bob.rect] * 2):  # each crop holds its box, inside the image
@@ -197,12 +217,55 @@ def test_compute_parses_regions_and_scales_from_the_canvas():
     regions = json.dumps({"version": 2, "canvas": {"width": 100, "height": 50}, "regions": [
         {"id": "a", "name": "A", "bbox": [-25, -50, 0, 0], "label": "character"},
         {"id": "h", "name": "Hidden", "bbox": [-25, -50, 25, 50], "label": "character", "visible": False}]})
-    runner = FakeRunner({"face:1": [(10, 10, 20, 20)]})
+    runner = FakeRunner({"face": [(10, 10, 20, 20)]})
     out = cm.compute(torch.rand(2, H, W, 3), regions, "", runner, 0.0)
     assert len(out.frames) == 2 and [b.id for b in out.frames[0].boxes] == ["a"]
     assert out.frames[0].boxes[0].rect == (0, 0, 100, 50)       # canvas 100x50 on a 200x100 image
     u = out.union()
     assert u.shape == (2, H, W) and u[0, 10:20, 10:20].all() and u[0].sum() == 100
+
+
+def test_hug_each_character_gets_its_own_face_despite_the_neighbours_in_the_crop():
+    """The reported case: two tall boxes side by side, so each crop holds both characters, and SAM3 ranks
+    the neighbour's face (and a face-like distractor on the neighbour) above the real one. With the other
+    character greyed out, the right character's own face is found."""
+    boxes = [box("anime", centred(0, 0, 100, 100)), box("real", centred(100, 0, 200, 100))]
+    scene = {"person": [(5, 2, 98, 100), (102, 2, 195, 100)],
+             "face": [(80, 20, 98, 38), (60, 60, 75, 75), (110, 15, 135, 40)]}   # anime, distractor, real
+    runner = FakeRunner(scene)
+    img = torch.rand(H, W, 3)
+    f = cm.mask_frame(img, boxes, details(boxes, {b.id: {"parts": {"eyes": {"on": False}}} for b in boxes}),
+                      None, runner, 0.15)
+    anime, real = f.boxes
+    assert real.found == {"face": True} and torch.equal(real.parts["face"], rect_mask(110, 15, 135, 40))
+    assert anime.found == {"face": True} and anime.parts["face"][20:38, 80:98].all()
+    assert not anime.parts["face"][15:40, 110:135].any()
+    # what SAM3 was shown for the right character: the left character's pixels greyed out, its own intact
+    view = [c for c in runner.calls if c[0] == "find" and c[1][2] == W][-1][3]
+    assert (view[50, 50] == cm.NEUTRAL).all() and torch.equal(view[50, 150], img[50, 150])
+    # the outlines are the detected people, not the boxes, so no box-prompt fallback was needed
+    assert torch.equal(anime.outline, rect_mask(5, 2, 98, 100)) and anime.outline_found
+    assert "box" not in [c[0] for c in runner.calls]
+
+
+def test_pick_outline_takes_the_person_matching_the_box():
+    rect = (100, 0, 200, 100)
+    neighbour = rect_mask(5, 2, 120, 100)          # reaches into the box, but mostly outside it
+    me = rect_mask(105, 5, 195, 100)
+    small = rect_mask(150, 50, 155, 55)            # inside, but a sliver of the box
+    assert torch.equal(cm.pick_outline([neighbour, small, me], rect), me)
+    assert cm.pick_outline([neighbour, small], rect) is None
+    assert cm.pick_outline([], rect) is None
+
+
+def test_clean_mask_fills_speckle_and_drops_specks():
+    speckled = torch.zeros(H, W, dtype=torch.bool)
+    speckled[20:60, 20:60] = (torch.arange(40)[:, None] + torch.arange(40)[None, :]) % 2 == 0   # checkerboard
+    speckled[80, 150] = True                                                                       # lone speck
+    c = cm.clean_mask(speckled, 2)
+    assert c[22:58, 22:58].all() and not c[80, 150] and not c[70:, :].any()
+    near_edge = rect_mask(5, 2, 98, 100)           # 2 px from the top, touching the bottom: unchanged
+    assert torch.equal(cm.clean_mask(near_edge, 2), near_edge)
 
 
 # ------------------------------------------------------------------------- SAM3 wrapper
@@ -216,6 +279,9 @@ class FakeDetect:
                           "threshold": threshold, "refine": refine_iterations, "individual": individual_masks})
         m = torch.zeros(1, image.shape[1], image.shape[2])
         m[0, :2, :3] = 1.0                                       # top-left corner of whatever it was given
+        if individual_masks:                                     # [N, h, w]: a second detection too
+            m = torch.cat([m, torch.zeros(1, image.shape[1], image.shape[2])])
+            m[1, -1, -1] = 1.0
         return types.SimpleNamespace(args=(m, []))
 
 
@@ -263,6 +329,13 @@ def test_runner_calls_comfyui_sam3_and_memoises(fake_sam3):
     r.find(img.clone(), cm.image_key(img.clone()), (100, 30, 160, 90), "eye:2")
     r.segment_box(img, key, (10, 20, 60, 70))
     assert len(fake_sam3.calls) == n and clip.encoded == ["eye:2"]
+    # people: one mask per detection, pasted back at the crop
+    ps = r.persons(img, key, (40, 10, 90, 60))
+    c = fake_sam3.calls[-1]
+    assert c["cond"] == [[f"cond:{cm.PERSON_PROMPT}", {}]] and c["individual"] is True and c["shape"] == (1, 50, 50, 3)
+    assert len(ps) == 2 and ps[0][10:12, 40:43].all() and ps[0].sum() == 6 and ps[1][59, 89] and ps[1].sum() == 1
+    n = len(fake_sam3.calls)
+    assert len(r.persons(img, key, (40, 10, 90, 60))) == 2 and len(fake_sam3.calls) == n   # memoised
     # a different threshold is a different request
     cm.Sam3Runner(model, clip, 0.6, 3).segment_box(img, key, (10, 20, 60, 70))
     assert len(fake_sam3.calls) == n + 1
