@@ -1,0 +1,251 @@
+"""MOSS-Image Regional Detailer: pass planning, crops, blending and the node, with ComfyUI's sampler, VAE
+and LoRA loader replaced by stand-ins."""
+
+import sys
+import types
+
+import pytest
+import torch
+
+from moss_regional_lora import character_masks as cm
+from moss_regional_lora import detailer as dt
+
+H, W = 200, 300
+
+
+def rect_mask(x0, y0, x1, y1):
+    m = torch.zeros(H, W, dtype=torch.bool)
+    m[y0:y1, x0:x1] = True
+    return m
+
+
+def character(name, parts, caption="", detail=None, loras=()):
+    d = cm.resolve_detail(cm.BoxInfo(name, name, (0, 0, 1, 1), "character", caption, "#ff0000", tuple(loras)), detail)
+    masks = {n: rect_mask(*r) for n, r in parts.items()}
+    return cm.CharacterMask(id=name, name=name, label="character", caption=caption, color="#ff0000",
+                            loras=tuple(loras), detail=d, rect=(0, 0, W, H), outline=torch.zeros(H, W, dtype=torch.bool),
+                            outline_found=True, parts=masks, found={n: bool(m.any()) for n, m in masks.items()})
+
+
+def two_characters():
+    alice = character("alice", {"eyes": (40, 40, 60, 46), "face": (30, 30, 70, 80), "skin": (20, 20, 90, 190)},
+                      caption="a tall woman", loras=[("alice.safetensors", 0.8)],
+                      detail={"prompt": "green eyes", "loras": [{"lora": "eye_detail.safetensors", "weight": 0.5}],
+                              "parts": {"eyes": {"denoise": 0.6}, "face": {"prompt": "smiling"}, "skin": {"on": True}}})
+    bob = character("bob", {"face": (200, 30, 240, 80), "hands": (210, 150, 230, 170)},
+                    detail={"use_box_loras": False, "parts": {"hands": {"on": True}}}, loras=[("bob.safetensors", 1.0)])
+    bob.parts["hands"] = torch.zeros(H, W, dtype=torch.bool)       # not found: skipped
+    return cm.CharacterMasks([cm.FrameMasks(W, H, [alice, bob])])
+
+
+# ------------------------------------------------------------------------- planning
+def test_plan_order_prompts_loras_and_denoise():
+    passes = list(dt.plan(two_characters(), 0.35))
+    assert [(p.box, p.part) for p in passes] == [("alice", "skin"), ("alice", "face"), ("alice", "eyes"), ("bob", "face")]
+    skin, face, eyes, bob_face = passes
+    assert face.prompt == "a tall woman, green eyes, smiling"
+    assert eyes.prompt == "a tall woman, green eyes, detailed eyes"       # empty part prompt: the hint
+    assert bob_face.prompt == "detailed face"                             # no caption, no detail prompt
+    assert eyes.loras == (("alice.safetensors", 0.8), ("eye_detail.safetensors", 0.5))
+    assert bob_face.loras == ()                                           # box LoRAs turned off
+    assert (eyes.denoise, face.denoise, skin.denoise) == (0.6, 0.35, 0.35)
+    assert dt.count_passes(two_characters(), 0.35) == 4
+
+
+# ------------------------------------------------------------------------- geometry
+def test_crop_region_pads_keeps_a_minimum_and_stays_inside():
+    m = rect_mask(100, 100, 120, 110)                     # 20 x 10
+    assert dt.crop_region(m, 0.5, 0) == (90, 90, 130, 120)      # half the longer side (10 px) on every side
+    x0, y0, x1, y1 = dt.crop_region(m, 0.0, 64)
+    assert (x1 - x0, y1 - y0) == (64, 64) and x0 <= 100 and x1 >= 120
+    x0, y0, x1, y1 = dt.crop_region(rect_mask(0, 0, 10, 10), 0.0, 64)   # at the corner: slid in
+    assert (x0, y0, x1, y1) == (0, 0, 64, 64)
+    assert dt.crop_region(rect_mask(0, 0, W, H), 0.5, 64) == (0, 0, W, H)
+
+
+def test_target_size_whole_latent_cells_and_upscale_cap():
+    assert dt.target_size((0, 0, 100, 50), 1024, 4.0) == (400, 192)        # capped at 4x, snapped to 16
+    assert dt.target_size((0, 0, 512, 256), 1024, 4.0) == (1024, 512)
+    assert dt.target_size((0, 0, 2048, 1024), 1024, 4.0) == (1024, 512)    # large: scaled down
+    for w, h in [(37, 91), (5, 5)]:
+        tw, th = dt.target_size((0, 0, w, h), 1024, 8.0)
+        assert tw % 16 == 0 and th % 16 == 0 and tw >= 16 and th >= 16
+
+
+def test_blend_mask_covers_the_part_and_fades_out():
+    m = rect_mask(100, 100, 140, 140)
+    soft = dt.blend_mask(m, 4, 12)
+    assert (soft[m] == 1).all()                            # the part itself is fully replaced
+    assert 0 < soft[120, 146] < 1                          # feathered edge just outside the grown mask
+    assert soft[120, 180] == 0 and soft[10, 10] == 0
+    assert torch.equal(dt.blend_mask(m, 0, 0), m.float())
+
+
+# ------------------------------------------------------------------------- detailing
+class FakeSampler:
+    """Paints each crop a colour per pass and records what it was given."""
+
+    def __init__(self):
+        self.calls = []
+
+    def __call__(self, pixels, noise_mask, p, seed):
+        self.calls.append({"shape": tuple(pixels.shape), "mask": tuple(noise_mask.shape), "part": p.part,
+                           "seed": seed, "prompt": p.prompt, "mask_max": float(noise_mask.max())})
+        return torch.full_like(pixels, 0.1 * (len(self.calls)))
+
+
+def test_detail_changes_only_the_masked_parts():
+    masks = two_characters()
+    img = torch.rand(1, H, W, 3)
+    s = FakeSampler()
+    out = dt.detail(img, masks, s, denoise=0.35, crop_size=256, padding=0.3, max_upscale=4.0, grow=4, feather=8, seed=7)
+    assert out.shape == img.shape
+    touched = torch.zeros(H, W, dtype=torch.bool)
+    for p in dt.plan(masks, 0.35):
+        touched |= dt.blend_mask(p.mask, 4, 8) > 0
+    assert torch.equal(out[0][~touched], img[0][~touched])            # bit-identical outside every mask
+    assert torch.allclose(out[0, 42, 50], torch.full((3,), 0.3))       # alice's eyes: the last pass over her
+    assert torch.allclose(out[0, 50, 220], torch.full((3,), 0.4))      # bob's face
+    assert [c["part"] for c in s.calls] == ["skin", "face", "eyes", "face"]
+    assert [c["seed"] for c in s.calls] == [7, 8, 9, 10]
+    for c in s.calls:
+        h, w, _ = c["shape"]
+        assert h % 16 == 0 and w % 16 == 0 and c["mask"] == (h, w) and c["mask_max"] <= 1.0
+    eyes = s.calls[2]
+    assert max(eyes["shape"][:2]) <= 256 and min(eyes["shape"][:2]) >= 64 - 16   # min context, capped upscale
+
+
+def test_each_pass_sees_the_image_as_detailed_so_far():
+    masks = two_characters()
+    seen = []
+
+    def sampler(pixels, noise_mask, p, seed):
+        seen.append(float(pixels.mean()))
+        return torch.ones_like(pixels)
+    img = torch.zeros(1, H, W, 3)
+    dt.detail(img, masks, sampler, denoise=0.35, crop_size=256, padding=0.3, max_upscale=4.0, grow=0, feather=0, seed=0)
+    assert seen[0] == 0 and seen[1] > 0                     # the face crop already holds the redrawn skin
+
+
+def test_frames_without_passes_pass_through():
+    masks = cm.CharacterMasks([cm.FrameMasks(W, H, [])])
+    img = torch.rand(1, H, W, 3)
+    assert torch.equal(dt.detail(img, masks, FakeSampler(), denoise=0.35, crop_size=256, padding=0.3,
+                                 max_upscale=4.0, grow=4, feather=8, seed=0), img)
+
+
+# ------------------------------------------------------------------------- the node
+class FakeVAE:
+    def encode(self, pixels):                 # [1, h, w, 3] -> [1, 4, h/16, w/16]
+        assert pixels.shape[1] % 16 == 0 and pixels.shape[2] % 16 == 0
+        return pixels.permute(0, 3, 1, 2)[:, :, ::16, ::16].repeat(1, 2, 1, 1)[:, :4]
+
+    def decode(self, latent):                 # back to pixels, as a flat colour from the latent
+        b, c, h, w = latent.shape
+        return latent[:, :3].repeat_interleave(16, 2).repeat_interleave(16, 3).permute(0, 2, 3, 1).clamp(0, 1)
+
+
+class FakeClip:
+    def __init__(self):
+        self.encoded = []
+
+    def tokenize(self, text):
+        return text
+
+    def encode_from_tokens_scheduled(self, tokens):
+        self.encoded.append(tokens)
+        return [[f"cond:{tokens}", {}]]
+
+
+@pytest.fixture
+def fake_comfy(monkeypatch, tmp_path):
+    calls = {"ksampler": [], "lora": [], "loaded": []}
+
+    def common_ksampler(model, seed, steps, cfg, sampler_name, scheduler, positive, negative, latent, denoise=1.0):
+        calls["ksampler"].append({"model": model, "seed": seed, "steps": steps, "cfg": cfg, "sampler": sampler_name,
+                                  "scheduler": scheduler, "positive": positive, "negative": negative,
+                                  "mask": tuple(latent["noise_mask"].shape), "latent": tuple(latent["samples"].shape),
+                                  "denoise": denoise})
+        return ({"samples": torch.full_like(latent["samples"], 0.9)},)
+
+    def load_lora_for_models(model, clip, lora, strength_model, strength_clip):
+        assert clip is None and strength_clip == 0
+        calls["lora"].append((lora["name"], strength_model))
+        return f"{model}+{lora['name']}@{strength_model}", None
+
+    for f in ("alice.safetensors", "bob.safetensors", "eye_detail.safetensors"):
+        (tmp_path / f).write_bytes(b"x")
+    mods = {
+        "nodes": types.SimpleNamespace(common_ksampler=common_ksampler),
+        "comfy": types.ModuleType("comfy"),
+        "comfy.sd": types.SimpleNamespace(load_lora_for_models=load_lora_for_models),
+        "comfy.utils": types.SimpleNamespace(
+            load_torch_file=lambda path, safe_load=True: calls["loaded"].append(path) or {"name": path.split("/")[-1]},
+            ProgressBar=lambda total: types.SimpleNamespace(update=lambda n: None)),
+        "folder_paths": types.SimpleNamespace(get_full_path_or_raise=lambda folder, name: str(tmp_path / name)),
+        "comfy_execution": types.ModuleType("comfy_execution"),
+        "comfy_execution.graph_utils": types.SimpleNamespace(ExecutionBlocker=type("ExecutionBlocker", (), {
+            "__init__": lambda self, message: setattr(self, "message", message)})),
+    }
+    mods["comfy"].sd, mods["comfy"].utils = mods["comfy.sd"], mods["comfy.utils"]
+    for k, v in mods.items():
+        monkeypatch.setitem(sys.modules, k, v)
+    from moss_regional_lora import detailer_node
+    detailer_node._RAW_LORAS.clear()
+    return detailer_node, calls
+
+
+def run_node(node_mod, masks, **kw):
+    args = dict(image=torch.rand(1, H, W, 3), character_masks=masks, model="base", clip=FakeClip(), vae=FakeVAE(),
+                seed=5, steps=12, cfg=4.5, sampler_name="euler", scheduler="simple", denoise=0.35, crop_size=256,
+                padding=0.3, mask_grow=4, feather=8, stop_before_detailing=False)
+    args.update(kw)
+    return node_mod.MossRegionalDetailer().run(**args), args
+
+
+def test_node_samples_each_part_with_its_loras_prompt_and_negative(fake_comfy):
+    node_mod, calls = fake_comfy
+    (out,), args = run_node(node_mod, two_characters(), negative="NEG")
+    assert out.shape == (1, H, W, 3)
+    ks = calls["ksampler"]
+    assert len(ks) == 4 and [k["seed"] for k in ks] == [5, 6, 7, 8]
+    assert all(k["negative"] == "NEG" and k["steps"] == 12 and k["cfg"] == 4.5 for k in ks)
+    assert ks[2]["positive"] == [["cond:a tall woman, green eyes, detailed eyes", {}]] and ks[2]["denoise"] == 0.6
+    assert ks[0]["model"] == "base+alice.safetensors@0.8+eye_detail.safetensors@0.5"   # alice: box + detail LoRAs
+    assert ks[3]["model"] == "base"                                                       # bob: box LoRAs off
+    assert calls["lora"] == [("alice.safetensors", 0.8), ("eye_detail.safetensors", 0.5)]   # patched once, reused
+    for k in ks:                                                    # noise mask at pixel size, latent 1/16
+        _, _, mh, mw = k["mask"]
+        assert k["latent"][2:] == (mh // 16, mw // 16)
+    assert torch.allclose(out[0, 42, 50], torch.full((3,), 0.9))    # redrawn inside the part
+    assert torch.equal(out[0, 195, 295], args["image"][0, 195, 295])   # untouched far away
+
+
+def test_node_without_negative_encodes_an_empty_one(fake_comfy):
+    node_mod, calls = fake_comfy
+    clip = FakeClip()
+    run_node(node_mod, two_characters(), clip=clip)
+    assert clip.encoded[0] == "" and calls["ksampler"][0]["negative"] == [["cond:", {}]]
+
+
+def test_node_stop_before_detailing_blocks_silently(fake_comfy):
+    node_mod, calls = fake_comfy
+    (out,), _ = run_node(node_mod, two_characters(), stop_before_detailing=True)
+    assert type(out).__name__ == "ExecutionBlocker" and out.message is None
+    assert calls["ksampler"] == []
+
+
+def test_node_with_nothing_to_detail_passes_the_image_through(fake_comfy):
+    node_mod, calls = fake_comfy
+    img = torch.rand(1, H, W, 3)
+    (out,), _ = run_node(node_mod, cm.CharacterMasks([cm.FrameMasks(W, H, [])]), image=img)
+    assert out is img and calls["ksampler"] == []
+
+
+def test_node_is_registered():
+    from moss_regional_lora import node
+    cls = node.NODE_CLASS_MAPPINGS["MossRegionalDetailer"]
+    assert node.NODE_DISPLAY_NAME_MAPPINGS["MossRegionalDetailer"] == "MOSS-Image Regional Detailer"
+    req, opt = cls.INPUT_TYPES()["required"], cls.INPUT_TYPES()["optional"]
+    assert req["character_masks"][0] == "MOSS_CHARACTER_MASKS" and "stop_before_detailing" in req
+    assert opt["negative"][0] == "CONDITIONING" and cls.RETURN_TYPES == ("IMAGE",)

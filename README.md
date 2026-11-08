@@ -13,7 +13,9 @@ One node to draw the boxes of a MOSS-Image generation. Each box can carry:
 The node outputs the patched MODEL and the finished layout prompt STRING.
 
 **MOSS-Image Character Masks** follows the generation: it finds each box's character in the image with
-SAM3 and masks its face, eyes, hands, hair and skin, ready for detailing (see *Character masks*).
+SAM3 and masks its face, eyes, hands, hair and skin. **MOSS-Image Regional Detailer** then redraws each
+of those parts with that character's own caption and LoRAs (see *Character masks* and *Regional
+detailer*).
 
 > **Where the LoRA lands depends on three facts about MOSS-Image's transformer sequence.** They were
 > measured with the included **MOSS-Image Layout Discovery** node on ComfyUI's MOSS-Image
@@ -260,6 +262,42 @@ cache, only this node re-runs, and SAM3 results are reused when only a prompt or
 
 Outputs: `character_masks` (each box's part masks with its caption, LoRAs and detail settings, for the
 detailer), `preview` (the image with the parts tinted) and `mask` (every part as one mask).
+
+## Regional detailer
+
+**MOSS-Image Regional Detailer** redraws each masked part with its character's prompt and LoRAs.
+
+```
+Character Masks ──character_masks──▶ MOSS-Image Regional Detailer ──image──▶ Save Image
+VAE Decode ──────────image────────▶   (seed, steps, cfg, sampler,
+Load Diffusion Model ──model──────▶    denoise, crop size, ...)
+CLIP / VAE / your negative encode ─▶
+```
+
+Connect the **base** model (from the loader, or after ordinary LoRA loaders), not the Regional LoRA
+node's output: each box's LoRAs are applied here, to that box's crops only. `negative` is optional
+(connect your negative text encode; empty if not).
+
+For each image, characters are detailed back to front (layer order) and each character's parts coarse to
+fine (skin, hair, face, hands, eyes), each as its own pass on the image so far:
+
+1. **Crop** the part (its mask grown by `mask_grow` and feathered by `feather`) with `padding` around it,
+   and sample it at about `crop_size` on its long side. Small parts (eyes) are upscaled at most
+   `max_upscale` times (advanced); their crop takes more context instead.
+2. **Re-sample** it with a noise mask, so only the part changes. Prompt: the box's caption, the box's
+   detail prompt and the part's prompt (empty: "detailed face" and so on), all set in the Character Masks
+   editor. LoRAs: the box's own (unless *Box LoRAs* is off) plus its detail-only LoRAs, applied to the
+   model only, as the main node does. Denoise: the part's own, or the node's `denoise` (0.35). Seed:
+   `seed` plus the pass number.
+3. **Blend** it back with the feathered mask. Pixels outside every part's feathered mask are untouched,
+   bit for bit.
+
+Use the same `cfg`, `sampler_name` and `scheduler` as your KSampler.
+
+**Check the masks first:** tick `stop_before_detailing` and queue. Everything up to the masks runs (the
+Character Masks editor shows them) and the detailer stops quietly, so nothing after it runs. Adjust the
+detail settings or points (only the masks re-run), then untick it and queue again: the image and the
+masks come from ComfyUI's cache and only the detailer runs.
 
 ## Layout discovery (after ComfyUI updates)
 
