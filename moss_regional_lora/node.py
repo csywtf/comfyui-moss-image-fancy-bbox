@@ -32,12 +32,44 @@ _LORA_CACHE: "OrderedDict[str, tuple]" = OrderedDict()
 _LORA_CACHE_SIZE = 6
 
 
+def _file_stamp(path: str) -> tuple:
+    st = os.stat(path)
+    return (st.st_mtime_ns, st.st_size)
+
+
+def _lora_fingerprint(regions) -> object:
+    """What ComfyUI's cache cannot see from the inputs: the contents of the LoRA files the boxes name.
+
+    The inputs (regions, size, settings, the upstream model) are already part of the cache key, so the
+    node re-runs whenever one of them changes. This adds each used file's modification time and size, so
+    a LoRA overwritten under the same name also re-runs it. ``NaN`` (always re-run) when the regions
+    can't be read here: wired from another node, or a missing ComfyUI.
+    """
+    if not isinstance(regions, str):
+        return float("nan")
+    try:
+        doc = parse_document(regions)
+    except Exception:
+        return regions   # the run reports the parse error; re-run whenever the text changes
+    try:
+        import folder_paths
+    except ImportError:
+        return float("nan")
+    stamps = []
+    for name in sorted({spec.lora for spec in doc.loras}):
+        path = folder_paths.get_full_path("loras", name)
+        try:
+            stamps.append(f"{name}={_file_stamp(path)}" if path else f"{name}=missing")
+        except OSError:
+            stamps.append(f"{name}=unreadable")
+    return ";".join(stamps)
+
+
 def _load_lora_file(name: str):
     import comfy.utils
     import folder_paths
     path = folder_paths.get_full_path_or_raise("loras", name)
-    st = os.stat(path)
-    stamp = (st.st_mtime_ns, st.st_size)
+    stamp = _file_stamp(path)
     hit = _LORA_CACHE.get(path)
     if hit is not None and hit[0] == stamp:
         _LORA_CACHE.move_to_end(path)
@@ -138,9 +170,11 @@ class MossRegionalLora:
                    "Outputs the patched model and the layout prompt.")
 
     @classmethod
-    def IS_CHANGED(cls, **kwargs):
-        # The hooks live outside ModelPatcher's weight-patch tracking; never let the cache reuse us (NFR-4).
-        return float("nan")
+    def IS_CHANGED(cls, regions=None, **kwargs):
+        # The patches live on this node's own clone of the model, added through ModelPatcher's injection and
+        # wrapper API, so a cached result (same inputs) carries the same hooks and is safe to reuse. Only a
+        # LoRA file changed on disk is invisible to the cache key; the fingerprint covers that (NFR-4).
+        return _lora_fingerprint(regions)
 
     def apply(self, model, width, height, regions, ramp_start, ramp_end, steps,
               strict, caption="", text_position=None, image_order=None, source_tokens=None):

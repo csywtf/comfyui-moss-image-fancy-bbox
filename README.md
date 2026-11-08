@@ -97,7 +97,10 @@ whole canvas at weight 1.0 matches `LoraLoader` at strength 1.0 on the image tok
 
 The hooks are installed through ComfyUI's own `ModelPatcher` injection mechanism, so they come and
 go with the model being loaded, and running the node again replaces its hooks instead of stacking
-them. Because the change is invisible to ComfyUI's cache, the node always re-executes.
+them. The hooks live on the node's own copy of the model, so ComfyUI's cache works as usual: queueing
+an unchanged workflow reuses the cached image, and the node re-runs (with everything after it) only
+when one of its inputs, the upstream model, or one of the LoRA files it uses (by size and modification
+time) changes.
 
 kohya (`lora_down`/`lora_up`/`alpha`) and peft/diffusers (`lora_A`/`lora_B`) LoRAs are supported.
 Keys that do not resolve to a linear layer (text-encoder keys, DoRA, LoHa, ...) are logged and
