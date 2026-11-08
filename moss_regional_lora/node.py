@@ -265,10 +265,12 @@ class MossRegionalLora:
         return out(summary)
 
 from .character_masks_node import MossCharacterMasks  # noqa: E402
+from .detailer_node import MossRegionalDetailer  # noqa: E402
 from .discovery_node import MossLayoutDiscovery  # noqa: E402
 
 NODE_CLASS_MAPPINGS = {"MossRegionalLora": MossRegionalLora, "MossLayoutDiscovery": MossLayoutDiscovery,
-                       "MossCharacterMasks": MossCharacterMasks}
+                       "MossCharacterMasks": MossCharacterMasks, "MossRegionalDetailer": MossRegionalDetailer}
 NODE_DISPLAY_NAME_MAPPINGS = {"MossRegionalLora": "MOSS-Image Regional LoRA + Layout Prompt",
                               "MossLayoutDiscovery": "MOSS-Image Layout Discovery",
-                              "MossCharacterMasks": "MOSS-Image Character Masks"}
+                              "MossCharacterMasks": "MOSS-Image Character Masks",
+                              "MossRegionalDetailer": "MOSS-Image Regional Detailer"}
