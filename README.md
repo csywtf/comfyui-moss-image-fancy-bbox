@@ -12,6 +12,9 @@ One node to draw the boxes of a MOSS-Image generation. Each box can carry:
 
 The node outputs the patched MODEL and the finished layout prompt STRING.
 
+**MOSS-Image Character Masks** follows the generation: it finds each box's character in the image with
+SAM3 and masks its face, eyes, hands, hair and skin, ready for detailing (see *Character masks*).
+
 > **Where the LoRA lands depends on three facts about MOSS-Image's transformer sequence.** They were
 > measured with the included **MOSS-Image Layout Discovery** node on ComfyUI's MOSS-Image
 > implementation and are the main node's defaults (`text_position = suffix`, `image_order = raster`,
@@ -60,7 +63,8 @@ takes no size; it samples the latent it is given). It is built to sit alongside 
 offload, and `torch.compile`, without turning any of them off (the hooks only read each layer's input
 and output, and compile without graph breaks).
 
-Outputs: `model`, `prompt`, and `width`/`height` (the canvas size, for the empty latent node).
+Outputs: `model`, `prompt`, `width`/`height` (the canvas size, for the empty latent node) and
+`regions` (the boxes plus the canvas size, for *MOSS-Image Character Masks*).
 
 Settings: all of them are in the editor's **Canvas** panel (shown when no box is selected). On the
 node they are ordinary inputs that the editor hides, so they are saved with the workflow and sent
@@ -195,6 +199,54 @@ decided; character LoRAs that fight the layout can fade in later. Curve edits ar
 other edit. LoRAs saved before curves existed show a dashed graph: they keep using the node's
 `ramp_start`/`ramp_end` until you edit their curve.
 
+## Character masks
+
+**MOSS-Image Character Masks** finds each box's character in the generated image and masks its parts,
+for detailing each character with its own prompt and LoRAs.
+
+```
+Regional LoRA + Layout Prompt ──regions──▶ MOSS-Image Character Masks ──character_masks──▶ (detailer)
+VAE Decode ───────────────────image─────▶      (editor)              ──preview / mask──▶ Preview Image
+Load Checkpoint (SAM3) ───model, clip───▶
+```
+
+**SAM3:** ComfyUI's own SAM3 (0.44 or newer). Meta's original release is gated; use the copy ComfyUI's
+*Image Segmentation (SAM3)* template uses instead: `sam3.1_multiplex_fp16.safetensors` from
+`https://huggingface.co/Comfy-Org/sam3.1` (`checkpoints/` folder), saved in `ComfyUI/models/checkpoints`
+and loaded with the normal **Load Checkpoint** node (its MODEL to `sam3_model`, its CLIP to `sam3_clip`).
+
+**What it does** for each visible box with Detail on:
+
+1. **Outline:** SAM3 segments the main object inside the box: the character's silhouette. If it finds
+   nothing, the box itself is used (the editor says so).
+2. **Parts:** SAM3 looks for each ticked part by name (`face`, `eye` up to 2, `hand` up to 2, `hair`,
+   `skin` up to 4) on a crop around the character, so small faces get more of SAM3's resolution.
+3. **Overlaps:** a pixel inside two outlines belongs to the box higher in the layer list (on top), so
+   a hug doesn't give one character the other's face. A part may also use a few pixels just outside its
+   own outline (stray hair, edges).
+
+If the image isn't the canvas size (an upscaled image), the boxes are scaled to it.
+
+**The editor** (all of the node's inputs are hidden and set here):
+
+- **Boxes** (left): read live from the connected main node, with the same names and colours. The
+  checkbox turns Detail on or off; after a run, a dot per ticked part shows whether it was found
+  (dashed red: not found).
+- **Preview** (middle): the last run's image with the masks tinted by part; the selected box is bright,
+  the others faint. Click a character to select its box.
+- **Detail** (right, for the selected box): Detail on/off; a detail prompt added to every part's prompt
+  (a trigger word, "green eyes"); whether to use the box's own LoRAs; detail-only LoRAs; and per part a
+  checkbox, a prompt (empty: "detailed face" and so on) and a denoise (empty: the detailer's default),
+  with "found" / "not found" after a run. With no box selected: SAM3's threshold, box margin and
+  refinement passes.
+
+Characters start with face and eyes on; other labels start off. The settings are stored on this node,
+not in the main node's regions, so changing them never regenerates the image: thanks to ComfyUI's
+cache, only this node re-runs, and SAM3 results are reused when only a prompt or denoise changed.
+
+Outputs: `character_masks` (each box's part masks with its caption, LoRAs and detail settings, for the
+detailer), `preview` (the image with the parts tinted) and `mask` (every part as one mask).
+
 ## Layout discovery (after ComfyUI updates)
 
 The node needs to know which positions of the transformer sequence are image tokens, whether the
@@ -268,6 +320,7 @@ python -m pytest
 node --test tests/web/*.test.mjs
 ```
 
-`node tests/web/editor_dom_smoke.mjs` additionally drives the editor in headless Chromium against a
-stub of ComfyUI's frontend API (needs Playwright). With `COMFYUI_PATH=/path/to/ComfyUI`, `pytest`
+`node tests/web/editor_dom_smoke.mjs` and `node tests/web/masks_dom_smoke.mjs` additionally drive the
+two editors in headless Chromium against a stub of ComfyUI's frontend API (needs Playwright). SAM3 is
+replaced by a stand-in in the tests. With `COMFYUI_PATH=/path/to/ComfyUI`, `pytest`
 also checks LoRA equivalence against ComfyUI's own `comfy.lora` code.

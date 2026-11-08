@@ -96,6 +96,16 @@ def _key_map(model_patcher, diffusion_model):
     return km
 
 
+def regions_with_canvas(regions: str, width: int, height: int) -> str:
+    """The regions JSON with the canvas size added, so nodes that read it can map the boxes onto an image
+    of any size (the boxes are pixels on this canvas)."""
+    data = json.loads(regions) if regions and str(regions).strip() else {}
+    if isinstance(data, list):
+        data = {"regions": data}
+    data["canvas"] = {"width": int(width), "height": int(height)}
+    return json.dumps(data, ensure_ascii=False)
+
+
 def _strip_previous(m):
     """Remove an earlier execution's injection and wrapper so re-execution replaces, not stacks (FR-10)."""
     from comfy.patcher_extension import WrappersMP
@@ -156,13 +166,14 @@ class MossRegionalLora:
         }
 
     # new outputs go last, so links in saved workflows keep their slots
-    RETURN_TYPES = ("MODEL", "STRING", "INT", "INT")
-    RETURN_NAMES = ("model", "prompt", "width", "height")
+    RETURN_TYPES = ("MODEL", "STRING", "INT", "INT", "STRING")
+    RETURN_NAMES = ("model", "prompt", "width", "height", "regions")
     OUTPUT_TOOLTIPS = ("The model with each box's LoRA applied inside its box.",
                        "The MOSS-Image layout prompt (same format as MOSS-Image Layout Prompt); "
                        "connect it to the positive text encode.",
                        "The canvas width; connect it to the empty latent node so the image matches the boxes.",
-                       "The canvas height; connect it to the empty latent node so the image matches the boxes.")
+                       "The canvas height; connect it to the empty latent node so the image matches the boxes.",
+                       "The boxes (the editor's JSON plus the canvas size), for MOSS-Image Character Masks.")
     FUNCTION = "apply"
     CATEGORY = "model_patches/moss_image"
     DESCRIPTION = ("Draw boxes for a MOSS-Image generation. Each box can carry a layout-prompt caption, a LoRA "
@@ -192,7 +203,7 @@ class MossRegionalLora:
         def out(summary):
             summary.setdefault("prompt_items", len(doc.prompt_items))
             summary.setdefault("notes", doc.notes)
-            return {"ui": {"moss_regional_lora": [summary]}, "result": (m, prompt, width, height)}
+            return {"ui": {"moss_regional_lora": [summary]}, "result": (m, prompt, width, height, regions_with_canvas(regions, width, height))}
 
         specs = doc.loras
         if not specs:
@@ -253,8 +264,11 @@ class MossRegionalLora:
             log.warning("[MOSS Regional LoRA] %s", msg)
         return out(summary)
 
+from .character_masks_node import MossCharacterMasks  # noqa: E402
 from .discovery_node import MossLayoutDiscovery  # noqa: E402
 
-NODE_CLASS_MAPPINGS = {"MossRegionalLora": MossRegionalLora, "MossLayoutDiscovery": MossLayoutDiscovery}
+NODE_CLASS_MAPPINGS = {"MossRegionalLora": MossRegionalLora, "MossLayoutDiscovery": MossLayoutDiscovery,
+                       "MossCharacterMasks": MossCharacterMasks}
 NODE_DISPLAY_NAME_MAPPINGS = {"MossRegionalLora": "MOSS-Image Regional LoRA + Layout Prompt",
-                              "MossLayoutDiscovery": "MOSS-Image Layout Discovery"}
+                              "MossLayoutDiscovery": "MOSS-Image Layout Discovery",
+                              "MossCharacterMasks": "MOSS-Image Character Masks"}
