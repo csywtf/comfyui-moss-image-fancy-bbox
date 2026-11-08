@@ -232,7 +232,46 @@ await page.locator(".mrl-props button", { hasText: "Clear" }).click();
 assert.deepEqual((await detail()).boxes.alice.points, []);
 console.log("points ok");
 
-// 6. disconnected: says what to connect
+// 6. under the graph's zoom (ComfyUI CSS-scales DOM widgets): the canvas keeps its layout size, a click
+// lands where it is made, and the cursor is the editor's, not ComfyUI's drag hand
+await page.evaluate(() => {
+  const host = document.getElementById("host");
+  host.style.transform = "scale(0.6)";
+  host.style.transformOrigin = "0 0";
+});
+await row("Bob").click();
+await row("Alice").click();                                                                // re-selects and redraws
+const geo = await page.evaluate(() => {
+  const wrap = document.querySelector(".mrl-canvas-wrap");
+  const c = wrap.querySelector("canvas");
+  return { canvasW: c.clientWidth, wrapW: wrap.clientWidth, canvasH: c.clientHeight, wrapH: wrap.clientHeight };
+});
+assert.equal(geo.canvasW, geo.wrapW);
+assert.equal(geo.canvasH, geo.wrapH);
+async function zoomedPx(x, y) {
+  return page.evaluate(([x, y]) => {
+    const wrap = document.querySelector(".mrl-canvas-wrap");
+    const r = wrap.querySelector("canvas").getBoundingClientRect();
+    const z = r.width / wrap.clientWidth;
+    const s = Math.min((wrap.clientWidth - 2) / 200, (wrap.clientHeight - 2) / 100);
+    return { x: r.left + ((wrap.clientWidth - 200 * s) / 2 + x * s) * z, y: r.top + ((wrap.clientHeight - 100 * s) / 2 + y * s) * z };
+  }, [x, y]);
+}
+q = await zoomedPx(150, 60);
+await page.keyboard.down("Shift");
+await page.mouse.click(q.x, q.y);
+await page.keyboard.up("Shift");
+assert.deepEqual((await detail()).boxes.alice.points, [{ x: 0.75, y: 0.6, label: 1 }]);
+const cursor = () => page.evaluate(() => document.querySelector(".mrl-canvas-wrap canvas").style.cursor);
+await page.mouse.move(q.x, q.y);
+assert.equal(await cursor(), "pointer");                                                   // over a point: removable
+q = await zoomedPx(40, 70);
+await page.mouse.move(q.x, q.y);
+assert.equal(await cursor(), "crosshair");
+await page.evaluate(() => { document.getElementById("host").style.transform = ""; });
+console.log("zoom ok");
+
+// 7. disconnected: says what to connect
 await page.evaluate(() => { window.node.inputs[1].link = null; });
 await page.waitForFunction(() => /Connect the regions output/.test(document.querySelector(".mcm-boxes").textContent));
 console.log("disconnected ok");
