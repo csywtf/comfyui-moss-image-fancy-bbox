@@ -177,6 +177,39 @@ export function serializeState(state) {
   return JSON.stringify(state, null, 2);
 }
 
+// Fields that only affect how the editor shows things, never the generated image. They stay in the
+// workflow (the widget's value) but are left out of what is sent to the backend, so changing them doesn't
+// invalidate ComfyUI's cache (and regenerate the image).
+export const VIEW_ONLY_REGION_FIELDS = ["name", "color", "locked", "group", "visible"];
+export const VIEW_ONLY_TOP_FIELDS = ["groups", "editor"];
+
+/**
+ * The regions JSON as the backend should see it: hidden boxes dropped (they emit nothing) and view-only
+ * fields removed; everything else, unknown fields included, kept. Works on the raw text (no defaults
+ * filled in, so it is stable run to run). Text that doesn't parse is sent unchanged, so the node reports it.
+ */
+export function backendRegions(text) {
+  let data;
+  try {
+    data = JSON.parse(text);
+  } catch {
+    return text;
+  }
+  if (Array.isArray(data)) data = { regions: data };
+  if (!data || typeof data !== "object" || !Array.isArray(data.regions)) return text;
+  const out = {};
+  for (const [k, v] of Object.entries(data)) if (!VIEW_ONLY_TOP_FIELDS.includes(k)) out[k] = v;
+  out.regions = data.regions
+    .filter((r) => !(r && typeof r === "object" && r.visible === false))
+    .map((r) => {
+      if (!r || typeof r !== "object" || Array.isArray(r)) return r;
+      const o = {};
+      for (const [k, v] of Object.entries(r)) if (!VIEW_ONLY_REGION_FIELDS.includes(k)) o[k] = v;
+      return o;
+    });
+  return JSON.stringify(out);
+}
+
 export function cloneState(state) {
   return JSON.parse(JSON.stringify(state));
 }

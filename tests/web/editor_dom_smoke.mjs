@@ -341,8 +341,15 @@ const migrated = await page.evaluate(() => {
 assert.deepEqual(migrated, [1024, 768, "{}", 0.15, 1.0, 20, true, "cap", "suffix", "raster", "end"]);
 console.log("old widget values migrated ok");
 
+
 await page.locator("#raw").fill(JSON.stringify(pasted, null, 2));
 await page.waitForFunction(() => getComputedStyle(document.querySelector(".mrl-error")).display === "none", null, { timeout: 2000 });
+// queueing sends only what affects the image: no names, colours, locks, groups or editor settings
+const sent = await page.evaluate(() => JSON.parse(window.node.widgets.find((w) => w.name === "regions").serializeValue()));
+assert.ok(sent.regions.length > 0);
+for (const r of sent.regions) for (const k of ["name", "color", "locked", "group", "visible"]) assert.ok(!(k in r), k);
+assert.ok(!("editor" in sent) && !("groups" in sent));
+console.log("backend regions ok");
 if (process.argv[2]) await page.screenshot({ path: process.argv[2] });
 assert.deepEqual(errors, []);
 console.log("PASS");

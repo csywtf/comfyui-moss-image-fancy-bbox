@@ -510,3 +510,20 @@ def test_detail_resolution_matches_the_editor():
                "parts": {n: {"on": p.on, "prompt": p.prompt, "denoise": p.denoise} for n, p in d.parts.items()}}
         assert got == case["expected"], case
     assert [p.name for p in cm.PARTS] == ["face", "eyes", "hands", "hair", "skin"]
+
+
+def test_regions_without_view_only_fields_work():
+    """The editor sends the backend no names, colours, locks or groups (they don't affect the image):
+    boxes get default names and the editor's default colours."""
+    regions = json.dumps({"version": 2, "regions": [
+        {"id": "a", "bbox": centred(10, 10, 60, 60), "label": "character"},
+        {"id": "b", "bbox": centred(110, 10, 160, 60), "label": "character"}]})
+    out = cm.compute(torch.rand(1, H, W, 3), regions, "", FakeRunner({"face": [(20, 20, 30, 30)]}), 0.1)
+    a, b = out.frames[0].boxes
+    assert (a.name, b.name) == ("region 1", "region 2")
+    assert (a.color, b.color) == cm_palette()[:2] and a.found["face"]
+
+
+def cm_palette():
+    from moss_regional_lora.regions import PALETTE
+    return PALETTE

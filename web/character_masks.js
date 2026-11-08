@@ -401,19 +401,21 @@ class MasksEditor {
     ]);
   }
 
+  /** Every box's points in its colour: + filled with it, − ringed with it. With a box selected, its points
+   * are full strength and the others faint. */
   drawPoints(g, v) {
     for (const { region, color } of this.boxes()) {
-      const sel = region.id === this.selected;
-      if (this.selected && !sel) continue; // only the selected box's points (or everyone's when none is)
+      const dim = this.selected && region.id !== this.selected;
+      g.globalAlpha = dim ? 0.4 : 1;
       for (const p of this.detailOf(region).points) {
         const cx = v.ox + p.x * v.W * v.s;
         const cy = v.oy + p.y * v.H * v.s;
         g.beginPath();
         g.arc(cx, cy, 7, 0, Math.PI * 2);
-        g.fillStyle = p.label ? color : "#5a1d1d";
+        g.fillStyle = p.label ? color : "#1b1b1b";
         g.fill();
         g.lineWidth = 2;
-        g.strokeStyle = p.label ? "#fff" : "#f66";
+        g.strokeStyle = p.label ? "#fff" : color;
         g.stroke();
         g.beginPath();
         g.moveTo(cx - 3.5, cy);
@@ -422,10 +424,11 @@ class MasksEditor {
           g.moveTo(cx, cy - 3.5);
           g.lineTo(cx, cy + 3.5);
         }
-        g.strokeStyle = "#fff";
+        g.strokeStyle = p.label ? "#fff" : color;
         g.stroke();
       }
     }
+    g.globalAlpha = 1;
   }
 
   // ------------------------------------------------------------------ preview

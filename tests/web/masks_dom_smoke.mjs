@@ -224,6 +224,20 @@ d = await detail();
 assert.deepEqual(d.boxes.alice.points, [{ x: 0.75, y: 0.6, label: 1 }, { x: 0.5, y: 0.8, label: 0 }]);
 assert.match(await page.locator(".mrl-props").innerText(), /1 \+ point\(s\), 1 − point\(s\)/);
 assert.match(await page.locator(".mrl-props .mrl-panel-head").innerText(), /Alice/);      // still selected
+// drawn in Alice's colour (#e6194b): the + point filled with it, the - point ringed with it
+async function pixel(x, y) {
+  const p = await imgPx(x, y);
+  return page.evaluate(([cx, cy]) => {
+    const c = document.querySelector(".mrl-canvas-wrap canvas");
+    const r = c.getBoundingClientRect();
+    return [...c.getContext("2d").getImageData(Math.round((cx - r.left) * c.width / r.width), Math.round((cy - r.top) * c.height / r.height), 1, 1).data];
+  }, [p.x, p.y]);
+}
+const near = (px, rgb) => rgb.every((v, i) => Math.abs(px[i] - v) <= 40);
+const sOf = await page.evaluate(() => { const c = document.querySelector(".mrl-canvas-wrap canvas").getBoundingClientRect(); return Math.min((c.width - 2) / 200, (c.height - 2) / 100); });
+const off = (px) => px / sOf;                                                              // screen px -> image px
+assert.ok(near(await pixel(150 + off(3.5), 60 + off(3.5)), [0xe6, 0x19, 0x4b]), "+ point fill");
+assert.ok(near(await pixel(100 + off(7), 80), [0xe6, 0x19, 0x4b]), "- point ring");
 if (process.argv[2]) await page.screenshot({ path: process.argv[2] });
 q = await imgPx(100, 80);
 await page.mouse.click(q.x, q.y);                                                          // on the - point: removed

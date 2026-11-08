@@ -202,3 +202,44 @@ test("LoRA lists: new entries start at full strength, version-1 boxes are read a
   assert.equal(S.parseState('{"regions": [{"bbox": [0, 0, 1, 1], "loras": "a"}]}').ok, false);
   assert.equal(S.parseState('{"regions": [{"bbox": [0, 0, 1, 1], "lora": "a", "curve": [{"x": 0}]}]}').ok, false);
 });
+
+test("what the backend sees: view-only edits change nothing, image edits do, hidden boxes are left out", () => {
+  const doc = {
+    version: 2,
+    regions: [
+      { id: "a", name: "Alice", bbox: [0, 0, 10, 10], loras: [{ lora: "a.safetensors", weight: 1 }], visible: true,
+        locked: false, color: "#e6194b", group: "g1", label: "character", caption: "a woman", text: "", palette: [], x_future: 1 },
+      { id: "h", name: "Hidden", bbox: [0, 0, 5, 5], loras: [], visible: false },
+    ],
+    groups: [{ id: "g1", name: "G", collapsed: false }],
+    editor: { grid_divisions: 3, snap: false },
+    x_top: "kept",
+  };
+  const base = S.backendRegions(JSON.stringify(doc, null, 2));
+  const sent = JSON.parse(base);
+  assert.deepEqual(sent, {
+    version: 2,
+    regions: [{ id: "a", bbox: [0, 0, 10, 10], loras: [{ lora: "a.safetensors", weight: 1 }], label: "character",
+                caption: "a woman", text: "", palette: [], x_future: 1 }],
+    x_top: "kept",
+  });
+  const variant = (fn) => { const d = structuredClone(doc); fn(d); return S.backendRegions(JSON.stringify(d)); };
+  // view-only: identical output (same cache key)
+  for (const fn of [
+    (d) => (d.regions[0].color = "#000000"), (d) => (d.regions[0].locked = true), (d) => (d.regions[0].name = "Renamed"),
+    (d) => (d.regions[0].group = null), (d) => (d.groups[0].collapsed = true), (d) => (d.editor.snap = true),
+    (d) => (d.regions[1].bbox = [1, 1, 4, 4]),                     // a hidden box moved
+  ]) assert.equal(variant(fn), base);
+  // what the image depends on: different output
+  for (const fn of [
+    (d) => (d.regions[0].bbox = [0, 0, 11, 10]), (d) => (d.regions[0].caption = "a man"),
+    (d) => (d.regions[0].loras[0].weight = 0.5), (d) => (d.regions[0].label = "object"),
+    (d) => (d.regions[1].visible = true),
+  ]) assert.notEqual(variant(fn), base);
+  // order among visible boxes matters (layer order); relative to a hidden one it doesn't
+  assert.equal(variant((d) => d.regions.reverse()), base);
+  const twoVisible = (d) => (d.regions[1].visible = true);
+  assert.notEqual(variant((d) => { twoVisible(d); d.regions.reverse(); }), variant(twoVisible));
+  assert.equal(S.backendRegions("{oops"), "{oops");                 // the node reports bad JSON itself
+  assert.deepEqual(JSON.parse(S.backendRegions('[{"bbox": [0, 0, 1, 1], "color": "#fff"}]')), { regions: [{ bbox: [0, 0, 1, 1] }] });
+});
