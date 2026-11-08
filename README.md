@@ -217,13 +217,15 @@ and loaded with the normal **Load Checkpoint** node (its MODEL to `sam3_model`, 
 
 **What it does** for each visible box with Detail on:
 
-1. **Outline:** SAM3 segments the main object inside the box: the character's silhouette. If it finds
-   nothing, the box itself is used (the editor says so).
-2. **Parts:** SAM3 looks for each ticked part by name (`face`, `eye` up to 2, `hand` up to 2, `hair`,
-   `skin` up to 4) on a crop around the character, so small faces get more of SAM3's resolution.
-3. **Overlaps:** a pixel inside two outlines belongs to the box higher in the layer list (on top), so
-   a hug doesn't give one character the other's face. A part may also use a few pixels just outside its
-   own outline (stray hair, edges).
+1. **Outline:** SAM3's detector looks for people around the box, and the one that best matches the box
+   (mostly inside it, covering a fair part of it) is the character's silhouette. If none matches, SAM3
+   segments the main object inside the box instead; if that finds nothing too, the box itself is used
+   (the editor says so). Small holes are filled and stray specks removed.
+2. **Overlaps:** a pixel inside two outlines belongs to the box higher in the layer list (on top).
+3. **Parts:** SAM3 looks for each ticked part by name (`face`, `eye`, `hand`, `hair`, `skin`) on a crop
+   around the character, with every other character greyed out, so it can't pick a neighbour's face in
+   a hug. A part keeps only its own character's pixels, plus a few just outside the outline (stray hair,
+   edges).
 
 If the image isn't the canvas size (an upscaled image), the boxes are scaled to it.
 
