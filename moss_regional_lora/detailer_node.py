@@ -147,7 +147,7 @@ class MossRegionalDetailer:
             from comfy_execution.graph_utils import ExecutionBlocker
             log.info("[MOSS Regional Detailer] stopped before detailing (untick 'stop_before_detailing' to run)")
             return (ExecutionBlocker(None),)       # silently skips everything after this node
-        total = count_passes(character_masks, denoise)
+        total = count_passes(character_masks, denoise, padding, crop_size / max_upscale, mask_grow + feather)
         if total == 0:
             log.info("[MOSS Regional Detailer] no part masks to detail; image passed through")
             return (image,)

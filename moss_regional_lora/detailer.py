@@ -8,6 +8,8 @@ as its own pass on the image so far:
    on a side so small parts keep some context. A crop smaller than ``crop_size`` is upscaled by a whole
    number (Lanczos), up to ``crop_size`` and ``max_upscale``; a larger one is sampled at its own size.
    Either way it is padded (not resized) to whole 16 px latent cells.
+   A part in pieces far apart (hands on either side of the body) is detailed as one pass per group of
+   pieces whose crops would overlap, so each gets its own upscaled crop; two eyes stay one pass.
 2. **Re-sample** it with a noise mask, so only the part changes: the prompt is the box's caption, the
    box's detail prompt and the part's prompt (or its hint, "detailed eyes"); the LoRAs are the box's own
    (unless turned off) plus its detail-only LoRAs; the denoise is the part's own or the node default.
@@ -55,9 +57,11 @@ def pass_loras(b: CharacterMask) -> Tuple[Tuple[str, float], ...]:
     return (tuple(b.loras) if b.detail.use_box_loras else ()) + tuple(b.detail.loras)
 
 
-def plan(masks: CharacterMasks, default_denoise: float) -> Iterator[Pass]:
+def plan(masks: CharacterMasks, default_denoise: float, padding: float = 0.3, min_side: float = 0.0,
+         margin: float = 0.0) -> Iterator[Pass]:
     """Every pass, in order: per image, characters back to front, parts coarse to fine. Parts not found
-    (empty masks) are skipped."""
+    (empty masks) are skipped. A part in pieces far apart (two hands on opposite sides) becomes one pass
+    per group of pieces whose crops would overlap (see :func:`split_mask`), each with its own crop."""
     for f, frame in enumerate(masks.frames):
         for b in frame.boxes:
             for part in DETAIL_ORDER:
@@ -66,7 +70,92 @@ def plan(masks: CharacterMasks, default_denoise: float) -> Iterator[Pass]:
                     continue
                 s = b.detail.parts.get(part)
                 denoise = s.denoise if s is not None and s.denoise is not None else default_denoise
-                yield Pass(f, b.name, part, m, part_prompt(b, part), pass_loras(b), float(denoise))
+                for piece in split_mask(m, padding, min_side, margin):
+                    yield Pass(f, b.name, part, piece, part_prompt(b, part), pass_loras(b), float(denoise))
+
+
+GRID = 256    # pieces are found on a grid this many cells across, so it stays quick on large images
+
+
+def _components(grid) -> "list":
+    """8-connected components of a 2-D bool numpy array: a list of (ys, xs) index arrays."""
+    import numpy as np
+    from collections import deque
+    seen = np.zeros(grid.shape, dtype=bool)
+    h, w = grid.shape
+    out = []
+    for y0, x0 in zip(*np.nonzero(grid)):
+        if seen[y0, x0]:
+            continue
+        seen[y0, x0] = True
+        q, ys, xs = deque([(y0, x0)]), [], []
+        while q:
+            y, x = q.popleft()
+            ys.append(y)
+            xs.append(x)
+            for dy in (-1, 0, 1):
+                for dx in (-1, 0, 1):
+                    ny, nx = y + dy, x + dx
+                    if 0 <= ny < h and 0 <= nx < w and grid[ny, nx] and not seen[ny, nx]:
+                        seen[ny, nx] = True
+                        q.append((ny, nx))
+        out.append((np.array(ys), np.array(xs)))
+    return out
+
+
+def _grown(rect, padding: float, min_side: float, margin: float):
+    x0, y0, x1, y1 = rect
+    pad = margin + padding * max(x1 - x0, y1 - y0)
+    w, h = max(x1 - x0 + 2 * pad, min_side), max(y1 - y0 + 2 * pad, min_side)
+    cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
+    return (cx - w / 2, cy - h / 2, cx + w / 2, cy + h / 2)
+
+
+def _overlap(a, b) -> bool:
+    return a[0] < b[2] and b[0] < a[2] and a[1] < b[3] and b[1] < a[3]
+
+
+def split_mask(mask: torch.Tensor, padding: float, min_side: float = 0.0, margin: float = 0.0) -> List[torch.Tensor]:
+    """A part's mask as groups of pieces to detail separately: pieces (connected areas) whose padded crops
+    (``padding`` of their size plus ``margin`` px, at least ``min_side``) overlap stay together, so two
+    eyes are one pass and hands on either side of the body are two. In reading order (top to bottom, then
+    left to right). A mask in one group comes back as it is."""
+    import numpy as np
+    H, W = mask.shape
+    cell = max(1, -(-max(H, W) // GRID))
+    grid = (F.max_pool2d(mask[None, None].float(), cell, stride=cell, ceil_mode=True)[0, 0] > 0).numpy()
+    comps = _components(grid)
+    if len(comps) <= 1:
+        return [mask]
+    groups = []   # [cell indices of members, rect in pixels]
+    for ys, xs in comps:
+        groups.append([[(ys, xs)], (int(xs.min()) * cell, int(ys.min()) * cell,
+                                    min(W, (int(xs.max()) + 1) * cell), min(H, (int(ys.max()) + 1) * cell))])
+    merged = True
+    while merged:
+        merged = False
+        for i in range(len(groups)):
+            for j in range(i + 1, len(groups)):
+                a, b = groups[i][1], groups[j][1]
+                if _overlap(_grown(a, padding, min_side, margin), _grown(b, padding, min_side, margin)):
+                    groups[i] = [groups[i][0] + groups[j][0],
+                                 (min(a[0], b[0]), min(a[1], b[1]), max(a[2], b[2]), max(a[3], b[3]))]
+                    del groups[j]
+                    merged = True
+                    break
+            if merged:
+                break
+    if len(groups) == 1:
+        return [mask]
+    groups.sort(key=lambda g: (g[1][1], g[1][0]))
+    out = []
+    for members, _ in groups:
+        sel = np.zeros(grid.shape, dtype=bool)
+        for ys, xs in members:
+            sel[ys, xs] = True
+        full = torch.from_numpy(sel).repeat_interleave(cell, 0).repeat_interleave(cell, 1)[:H, :W]
+        out.append(mask & full)
+    return out
 
 
 def crop_region(mask: torch.Tensor, padding: float, min_side: float) -> Rect:
@@ -194,7 +283,7 @@ def detail_frame(image: torch.Tensor, passes: Sequence[Pass], sample: Sampler, c
 def detail(images: torch.Tensor, masks: CharacterMasks, sample: Sampler, *, denoise: float, crop_size: int,
            padding: float, max_upscale: float, grow: int, feather: float, seed: int, on_pass=None,
            restore: float = 1.0) -> torch.Tensor:
-    passes = list(plan(masks, denoise))
+    passes = list(plan(masks, denoise, padding, crop_size / max_upscale, grow + feather))
     out = []
     for f in range(images.shape[0]):
         mine = [p for p in passes if p.frame == f] if f < len(masks.frames) else []
@@ -203,5 +292,6 @@ def detail(images: torch.Tensor, masks: CharacterMasks, sample: Sampler, *, deno
     return torch.stack(out)
 
 
-def count_passes(masks: CharacterMasks, denoise: float) -> int:
-    return sum(1 for _ in plan(masks, denoise))
+def count_passes(masks: CharacterMasks, denoise: float, padding: float = 0.3, min_side: float = 0.0,
+                 margin: float = 0.0) -> int:
+    return sum(1 for _ in plan(masks, denoise, padding, min_side, margin))
