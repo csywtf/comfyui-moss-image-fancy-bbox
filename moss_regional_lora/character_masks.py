@@ -10,7 +10,8 @@ For every visible box with Detail on:
    whose outline covers it.
 3. **Parts**: on a crop around the box and outline, with every other character's pixels greyed out (so
    SAM3 can only find this character's face, not a neighbour's), SAM3 finds each ticked part by text
-   ("face", "eye", ...), and the results are pasted back. A box's parts keep only pixels it owns, plus
+   ("face", "eye", ...); each mask is kept inside the detector's box for it (so a face stops at the chin
+   instead of running down the neck), and the results are pasted back. A box's parts keep only pixels it owns, plus
    unowned pixels just outside its outline (hair strands, edges); a pixel two boxes could both claim
    goes to the one on top.
 
@@ -244,6 +245,27 @@ def clean_mask(mask: torch.Tensor, r: int) -> torch.Tensor:
     return m[p:-p, p:-p]
 
 
+def clip_to_boxes(mask: torch.Tensor, boxes, grow: float = 0.08) -> torch.Tensor:
+    """Keep a part's mask inside the boxes SAM3's detector drew for it, each grown by ``grow`` of its size.
+
+    SAM3 refines each detection's mask past the detector's box when the colours carry on (a face mask
+    running down the neck); the box itself stops at the chin. No boxes (none reported): unchanged."""
+    if not boxes:
+        return mask
+    h, w = mask.shape
+    keep = torch.zeros_like(mask)
+    for b in boxes:
+        try:
+            x, y, bw, bh = float(b["x"]), float(b["y"]), float(b["width"]), float(b["height"])
+        except (KeyError, TypeError, ValueError):
+            return mask
+        gx, gy = max(2.0, bw * grow), max(2.0, bh * grow)
+        x0, y0 = max(0, int(x - gx)), max(0, int(y - gy))
+        x1, y1 = min(w, int(round(x + bw + gx))), min(h, int(round(y + bh + gy)))
+        keep[y0:y1, x0:x1] = True
+    return mask & keep
+
+
 def pick_outline(candidates: Sequence[torch.Tensor], rect: Rect) -> Optional[torch.Tensor]:
     """The detected person that best matches the box: mostly inside it and covering a fair part of it.
     None if no detection does (a neighbour reaching into the box doesn't count)."""
@@ -363,12 +385,18 @@ class Sam3Runner:
         self._conds: Dict[str, object] = {}
         self._model_id = id(getattr(model, "model", model))
 
-    def _run(self, image, individual=False, **kw) -> torch.Tensor:
-        """bool [h, w] (all detections as one mask), or [N, h, w] with ``individual``."""
+    def _run(self, image, individual=False, with_boxes=False, **kw):
+        """bool [h, w] (all detections as one mask), or [N, h, w] with ``individual``; with ``with_boxes``,
+        also the detector's boxes ({x, y, width, height} in ``image`` pixels)."""
         out = self._detect.execute(self.model, image[None], threshold=self.threshold,
                                    refine_iterations=self.refine, individual_masks=individual, **kw)
-        masks = out.args[0] if hasattr(out, "args") else out[0]
-        return masks.detach().cpu() > 0.5 if individual else masks[0].detach().cpu() > 0.5
+        args = out.args if hasattr(out, "args") else tuple(out)
+        masks = args[0].detach().cpu() > 0.5
+        masks = masks if individual else masks[0]
+        if not with_boxes:
+            return masks
+        boxes = args[1][0] if len(args) > 1 and args[1] else []
+        return masks, boxes
 
     def _cond(self, prompt):
         if prompt not in self._conds:
@@ -407,7 +435,8 @@ class Sam3Runner:
         """``prompt`` found inside ``crop`` of ``image``: bool [H, W] (zero outside the crop)."""
         def run():
             x0, y0, x1, y1 = crop
-            m = self._run(image[y0:y1, x0:x1], conditioning=self._cond(prompt))
+            m, boxes = self._run(image[y0:y1, x0:x1], with_boxes=True, conditioning=self._cond(prompt))
+            m = clip_to_boxes(m, boxes)
             full = torch.zeros(image.shape[0], image.shape[1], dtype=torch.bool)
             full[y0:y1, x0:x1] = m
             return full

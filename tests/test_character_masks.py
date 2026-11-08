@@ -341,6 +341,29 @@ def test_runner_calls_comfyui_sam3_and_memoises(fake_sam3):
     assert len(fake_sam3.calls) == n + 1
 
 
+def test_part_masks_stay_inside_the_detectors_boxes(fake_sam3, monkeypatch):
+    """SAM3's refined face mask runs down the neck; the detector's box stops at the chin."""
+    def execute(model, image, conditioning=None, bboxes=None, threshold=0.5, refine_iterations=2,
+                individual_masks=False):
+        m = torch.zeros(1, image.shape[1], image.shape[2])
+        m[0, 10:60, 10:30] = 1.0                                 # face (rows 10-35) + neck (rows 35-60)
+        return types.SimpleNamespace(args=(m, [[{"x": 8.0, "y": 8.0, "width": 24.0, "height": 27.0, "score": 0.9}]]))
+    monkeypatch.setattr(FakeDetect, "execute", staticmethod(execute))
+    r = cm.Sam3Runner(types.SimpleNamespace(model=object()), FakeClip(), 0.5, 2)
+    img = torch.rand(H, W, 3)
+    f = r.find(img, cm.image_key(img), (100, 0, 200, 100), "face:2")
+    # box rows 8..35 grown by 8% of 27 px (2.16) -> rows up to 37; columns all kept; pasted at x+100
+    assert f[10:37, 110:130].all() and not f[38:, :].any() and f.sum() == 27 * 20
+
+
+def test_clip_to_boxes():
+    m = rect_mask(0, 0, 50, 50)
+    assert torch.equal(cm.clip_to_boxes(m, []), m)                                   # no boxes: unchanged
+    out = cm.clip_to_boxes(m, [{"x": 10, "y": 10, "width": 10, "height": 10}, {"x": 40, "y": 0, "width": 5, "height": 5}])
+    assert torch.equal(out, rect_mask(8, 8, 22, 22) | rect_mask(38, 0, 47, 7))     # each grown by at least 2 px
+    assert torch.equal(cm.clip_to_boxes(m, [{"x": 1}]), m)                           # malformed: unchanged
+
+
 def test_runner_needs_comfyui_sam3(monkeypatch):
     monkeypatch.setitem(sys.modules, "comfy_extras.nodes_sam3", None)
     with pytest.raises(RuntimeError, match="SAM3"):

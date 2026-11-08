@@ -224,8 +224,9 @@ and loaded with the normal **Load Checkpoint** node (its MODEL to `sam3_model`, 
 2. **Overlaps:** a pixel inside two outlines belongs to the box higher in the layer list (on top).
 3. **Parts:** SAM3 looks for each ticked part by name (`face`, `eye`, `hand`, `hair`, `skin`) on a crop
    around the character, with every other character greyed out, so it can't pick a neighbour's face in
-   a hug. A part keeps only its own character's pixels, plus a few just outside the outline (stray hair,
-   edges).
+   a hug. Each part's mask stays inside the box SAM3's detector drew for it (plus a little), so a face
+   stops at the chin instead of running down the neck. A part keeps only its own character's pixels,
+   plus a few just outside the outline (stray hair, edges).
 
 If the image isn't the canvas size (an upscaled image), the boxes are scaled to it.
 
