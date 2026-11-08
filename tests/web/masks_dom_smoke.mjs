@@ -201,10 +201,38 @@ await page.mouse.click(hit.x, hit.y);
 assert.match(await page.locator(".mrl-props .mrl-panel-head").innerText(), /Detail: Bob/);
 assert.match(await page.locator(".mrl-props").innerText(), /found no character/);        // outline fallback
 assert.match(await page.locator(".mrl-props").innerText(), /no caption/);
-if (process.argv[2]) await page.screenshot({ path: process.argv[2] });
 console.log("result preview ok");
 
-// 5. disconnected: says what to connect
+// 5. points: Shift-click adds a + point for the selected box, Alt-click a - point, clicking a point removes it
+async function imgPx(x, y) {
+  return page.evaluate(([x, y]) => {
+    const c = document.querySelector(".mrl-canvas-wrap canvas").getBoundingClientRect();
+    const s = Math.min((c.width - 2) / 200, (c.height - 2) / 100);
+    return { x: c.left + (c.width - 200 * s) / 2 + x * s, y: c.top + (c.height - 100 * s) / 2 + y * s };
+  }, [x, y]);
+}
+await row("Alice").click();
+let q = await imgPx(150, 60);                                                              // her arm, across bob
+await page.keyboard.down("Shift");
+await page.mouse.click(q.x, q.y);
+await page.keyboard.up("Shift");
+q = await imgPx(100, 80);
+await page.keyboard.down("Alt");
+await page.mouse.click(q.x, q.y);
+await page.keyboard.up("Alt");
+d = await detail();
+assert.deepEqual(d.boxes.alice.points, [{ x: 0.75, y: 0.6, label: 1 }, { x: 0.5, y: 0.8, label: 0 }]);
+assert.match(await page.locator(".mrl-props").innerText(), /1 \+ point\(s\), 1 − point\(s\)/);
+assert.match(await page.locator(".mrl-props .mrl-panel-head").innerText(), /Alice/);      // still selected
+if (process.argv[2]) await page.screenshot({ path: process.argv[2] });
+q = await imgPx(100, 80);
+await page.mouse.click(q.x, q.y);                                                          // on the - point: removed
+assert.deepEqual((await detail()).boxes.alice.points, [{ x: 0.75, y: 0.6, label: 1 }]);
+await page.locator(".mrl-props button", { hasText: "Clear" }).click();
+assert.deepEqual((await detail()).boxes.alice.points, []);
+console.log("points ok");
+
+// 6. disconnected: says what to connect
 await page.evaluate(() => { window.node.inputs[1].link = null; });
 await page.waitForFunction(() => /Connect the regions output/.test(document.querySelector(".mcm-boxes").textContent));
 console.log("disconnected ok");
