@@ -5,12 +5,17 @@ front (layer order) and each character's parts coarse to fine (skin, hair, face,
 as its own pass on the image so far:
 
 1. **Crop** the part's mask (grown and feathered) plus padding, at least ``crop_size / max_upscale`` px
-   on a side so small parts keep some context, and resize it to about ``crop_size`` on its long side
-   (multiples of 16, MOSS-Image's latent cell).
+   on a side so small parts keep some context. A crop smaller than ``crop_size`` is upscaled by a whole
+   number (Lanczos), up to ``crop_size`` and ``max_upscale``; a larger one is sampled at its own size.
+   Either way it is padded (not resized) to whole 16 px latent cells.
 2. **Re-sample** it with a noise mask, so only the part changes: the prompt is the box's caption, the
    box's detail prompt and the part's prompt (or its hint, "detailed eyes"); the LoRAs are the box's own
    (unless turned off) plus its detail-only LoRAs; the denoise is the part's own or the node default.
-3. **Blend** the result back with the feathered mask. Pixels outside it are never touched.
+3. **Scale back** by area averaging (the exact inverse of a whole-number upscale's size) and **restore
+   detail**: the crop is also decoded without being redrawn, and what that round trip lost (resizing and
+   the VAE) is added back, so only the model's changes are kept. At denoise 0 the image comes back
+   unchanged.
+4. **Blend** the result back with the feathered mask. Pixels outside it are never touched.
 
 The sampling itself is a callable handed in by the node (ComfyUI's VAE and sampler); everything here is
 plain torch, tested without ComfyUI.
@@ -19,7 +24,7 @@ plain torch, tested without ComfyUI.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Callable, Iterator, List, Sequence, Tuple
+from typing import Callable, Iterator, List, Optional, Sequence, Tuple
 
 import torch
 import torch.nn.functional as F
@@ -78,13 +83,18 @@ def crop_region(mask: torch.Tensor, padding: float, min_side: float) -> Rect:
     return (int(nx0), int(ny0), min(W, int(round(nx0 + w))), min(H, int(round(ny0 + h))))
 
 
-def target_size(rect: Rect, crop_size: int, max_upscale: float) -> Tuple[int, int]:
-    """(width, height) to sample a crop at: about ``crop_size`` on the long side, upscaled at most
-    ``max_upscale`` times, in whole latent cells."""
-    w, h = rect[2] - rect[0], rect[3] - rect[1]
-    scale = min(crop_size / max(w, h), max_upscale)
-    snap = lambda v: max(LATENT_CELL, int(round(v * scale / LATENT_CELL)) * LATENT_CELL)
-    return snap(w), snap(h)
+def scale_for(rect: Rect, crop_size: int, max_upscale: float) -> float:
+    """How much to scale a crop before sampling: a whole number from 1 up to ``max_upscale`` that keeps
+    its long side within ``crop_size`` (whole numbers scale back exactly by area averaging); a crop far
+    larger than ``crop_size`` (over 1.5x) is scaled down to it instead, to bound the cost."""
+    long_side = max(rect[2] - rect[0], rect[3] - rect[1])
+    if long_side > 1.5 * crop_size:
+        return crop_size / long_side
+    return float(max(1, min(int(max_upscale), int(crop_size // long_side))))
+
+
+def padded(n: int) -> int:
+    return -(-n // LATENT_CELL) * LATENT_CELL
 
 
 def gaussian_blur(m: torch.Tensor, sigma: float) -> torch.Tensor:
@@ -109,49 +119,87 @@ def blend_mask(mask: torch.Tensor, grow: int, feather: float) -> torch.Tensor:
     return torch.maximum(soft, mask.float()).clamp(0, 1)
 
 
-def resize(img: torch.Tensor, w: int, h: int) -> torch.Tensor:
-    """[H, W, C] (or [H, W]) to [h, w, ...], bicubic with antialiasing, clamped to [0, 1]."""
+def resize(img: torch.Tensor, w: int, h: int, method: str = "lanczos") -> torch.Tensor:
+    """[H, W, C] (or [H, W]) to [h, w, ...] in float, unclamped. ``lanczos``: per channel in float with
+    Pillow (ComfyUI ships it; bicubic otherwise); ``area``: box averaging, the exact inverse of a
+    whole-number upscale's size."""
     flat = img.dim() == 2
-    t = (img[..., None] if flat else img).permute(2, 0, 1)[None].float()
-    if t.shape[-2:] != (h, w):
-        t = F.interpolate(t, size=(h, w), mode="bicubic", align_corners=False, antialias=True)
-    out = t[0].permute(1, 2, 0).clamp(0, 1)
+    x = (img[..., None] if flat else img).detach().cpu().float()
+    if tuple(x.shape[:2]) == (h, w):
+        out = x
+    elif method == "area":
+        out = F.interpolate(x.permute(2, 0, 1)[None], size=(h, w), mode="area")[0].permute(1, 2, 0)
+    else:
+        try:
+            import numpy as np
+            from PIL import Image
+            chans = [np.asarray(Image.fromarray(np.ascontiguousarray(x[..., c].numpy()), mode="F")
+                                .resize((w, h), Image.LANCZOS)) for c in range(x.shape[-1])]
+            out = torch.from_numpy(np.stack(chans, -1).copy())
+        except ImportError:
+            out = F.interpolate(x.permute(2, 0, 1)[None], size=(h, w), mode="bicubic", align_corners=False)[0].permute(1, 2, 0)
     return out[..., 0] if flat else out
 
 
-Sampler = Callable[[torch.Tensor, torch.Tensor, Pass, int], torch.Tensor]
+def pad_to_cells(img: torch.Tensor, value=None) -> torch.Tensor:
+    """Pad [h, w, C] (or [h, w]) on the right and bottom to whole latent cells: edge pixels repeated, or
+    ``value``."""
+    flat = img.dim() == 2
+    x = img[..., None] if flat else img
+    h, w = x.shape[:2]
+    ph, pw = padded(h) - h, padded(w) - w
+    if ph or pw:
+        t = x.permute(2, 0, 1)[None]
+        t = F.pad(t, (0, pw, 0, ph), mode="constant", value=value) if value is not None else F.pad(t, (0, pw, 0, ph), mode="replicate")
+        x = t[0].permute(1, 2, 0)
+    return x[..., 0] if flat else x
+
+
+# sample(pixels [h, w, 3], noise_mask [h, w], pass, seed) -> (redrawn [h, w, 3], reference [h, w, 3] or None):
+# ``reference`` is the same crop decoded without redrawing (the round trip alone), for detail restoration.
+Sampler = Callable[[torch.Tensor, torch.Tensor, Pass, int], Tuple[torch.Tensor, Optional[torch.Tensor]]]
 
 
 def detail_frame(image: torch.Tensor, passes: Sequence[Pass], sample: Sampler, crop_size: int, padding: float,
-                 max_upscale: float, grow: int, feather: float, seed: int, on_pass=None) -> torch.Tensor:
-    """Run ``passes`` on one image [H, W, C]. ``sample(pixels [h, w, 3], noise_mask [h, w], pass, seed)``
-    returns the re-sampled crop [h, w, 3]. Each pass works on the image as detailed so far."""
+                 max_upscale: float, grow: int, feather: float, seed: int, on_pass=None,
+                 restore: float = 1.0) -> torch.Tensor:
+    """Run ``passes`` on one image [H, W, C]; each works on the image as detailed so far."""
     out = image.detach().cpu().float().clone()
     for k, p in enumerate(passes):
         soft = blend_mask(p.mask, grow, feather)
         x0, y0, x1, y1 = crop_region(soft > 0, padding, crop_size / max_upscale)
-        tw, th = target_size((x0, y0, x1, y1), crop_size, max_upscale)
+        w, h = x1 - x0, y1 - y0
+        s = scale_for((x0, y0, x1, y1), crop_size, max_upscale)
+        tw, th = max(1, round(w * s)), max(1, round(h * s))
         crop = out[y0:y1, x0:x1, :3]
         a = soft[y0:y1, x0:x1]
-        result = sample(resize(crop, tw, th), resize(a, tw, th), p, seed + k)
-        result = resize(result[..., :3].detach().cpu().float(), x1 - x0, y1 - y0)
+        big = pad_to_cells(resize(crop, tw, th).clamp(0, 1))
+        big_mask = pad_to_cells(resize(a, tw, th, "area" if s < 1 else "lanczos").clamp(0, 1), value=0.0)
+        result, reference = sample(big, big_mask, p, seed + k)
+        back = "area" if s > 1 else "lanczos"          # area exactly undoes a whole-number upscale's size
+        res = resize(result[:th, :tw, :3], w, h, back)
+        if reference is not None and restore > 0:
+            # keep only what the model changed: what the round trip (resizing, VAE) lost is put back
+            delta = res - resize(reference[:th, :tw, :3], w, h, back)
+            res = restore * (crop + delta) + (1 - restore) * res
+        res = res.clamp(0, 1)
         a3 = a[..., None]
-        blended = crop * (1 - a3) + result * a3
-        # outside the feathered mask the original pixels are kept exactly (no resampling round trip)
-        out[y0:y1, x0:x1, :3] = torch.where(a3 > 0, blended, crop)   # an alpha channel, if any, is kept
+        blended = crop * (1 - a3) + res * a3
+        out[y0:y1, x0:x1, :3] = torch.where(a3 > 0, blended, crop)   # outside the mask: exactly as it was
         if on_pass is not None:
             on_pass(k, p)
     return out
 
 
 def detail(images: torch.Tensor, masks: CharacterMasks, sample: Sampler, *, denoise: float, crop_size: int,
-           padding: float, max_upscale: float, grow: int, feather: float, seed: int, on_pass=None) -> torch.Tensor:
+           padding: float, max_upscale: float, grow: int, feather: float, seed: int, on_pass=None,
+           restore: float = 1.0) -> torch.Tensor:
     passes = list(plan(masks, denoise))
     out = []
     for f in range(images.shape[0]):
         mine = [p for p in passes if p.frame == f] if f < len(masks.frames) else []
         out.append(detail_frame(images[f], mine, sample, crop_size, padding, max_upscale, grow, feather,
-                                seed + 1000 * f, on_pass) if mine else images[f].detach().cpu().float())
+                                seed + 1000 * f, on_pass, restore) if mine else images[f].detach().cpu().float())
     return torch.stack(out)
 
 

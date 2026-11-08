@@ -288,15 +288,21 @@ node's output: each box's LoRAs are applied here, to that box's crops only. `neg
 For each image, characters are detailed back to front (layer order) and each character's parts coarse to
 fine (skin, hair, face, hands, eyes), each as its own pass on the image so far:
 
-1. **Crop** the part (its mask grown by `mask_grow` and feathered by `feather`) with `padding` around it,
-   and sample it at about `crop_size` on its long side. Small parts (eyes) are upscaled at most
-   `max_upscale` times (advanced); their crop takes more context instead.
+1. **Crop** the part (its mask grown by `mask_grow` and feathered by `feather`) with `padding` around it.
+   A crop smaller than `crop_size` is upscaled by a whole number (2x, 3x, ..., Lanczos) up to `crop_size`
+   and at most `max_upscale` times (advanced); small parts (eyes) take more context instead. A larger crop
+   (hair, skin) is sampled at its own size. Either way it is padded, not resized, to whole 16 px cells.
 2. **Re-sample** it with a noise mask, so only the part changes. Prompt: the box's caption, the box's
    detail prompt and the part's prompt (empty: "detailed face" and so on), all set in the Character Masks
    editor. LoRAs: the box's own (unless *Box LoRAs* is off) plus its detail-only LoRAs, applied to the
    model only, as the main node does. Denoise: the part's own, or the node's `denoise` (0.35). Seed:
    `seed` plus the pass number.
-3. **Blend** it back with the feathered mask. Pixels outside every part's feathered mask are untouched,
+3. **Scale back** by area averaging (exact for a whole-number upscale) and **restore detail**: the crop
+   is also decoded without being redrawn, and what that round trip lost (resizing, VAE) is added back, so
+   only the model's changes are kept on top of the original's fine detail. At denoise 0 the image comes
+   back unchanged. `restore_detail` (advanced, default 1) scales this; lower it if a high denoise leaves
+   faint traces of the old features.
+4. **Blend** it back with the feathered mask. Pixels outside every part's feathered mask are untouched,
    bit for bit.
 
 Use the same `cfg`, `sampler_name` and `scheduler` as your KSampler.

@@ -63,13 +63,14 @@ def test_crop_region_pads_keeps_a_minimum_and_stays_inside():
     assert dt.crop_region(rect_mask(0, 0, W, H), 0.5, 64) == (0, 0, W, H)
 
 
-def test_target_size_whole_latent_cells_and_upscale_cap():
-    assert dt.target_size((0, 0, 100, 50), 1024, 4.0) == (400, 192)        # capped at 4x, snapped to 16
-    assert dt.target_size((0, 0, 512, 256), 1024, 4.0) == (1024, 512)
-    assert dt.target_size((0, 0, 2048, 1024), 1024, 4.0) == (1024, 512)    # large: scaled down
-    for w, h in [(37, 91), (5, 5)]:
-        tw, th = dt.target_size((0, 0, w, h), 1024, 8.0)
-        assert tw % 16 == 0 and th % 16 == 0 and tw >= 16 and th >= 16
+def test_scale_whole_numbers_capped_and_large_crops_native():
+    assert dt.scale_for((0, 0, 100, 50), 1024, 4.0) == 4           # capped by max_upscale
+    assert dt.scale_for((0, 0, 330, 330), 1024, 4.0) == 3           # a whole number, long side <= crop_size
+    assert dt.scale_for((0, 0, 805, 1000), 1024, 4.0) == 1          # already about crop_size: its own size
+    assert dt.scale_for((0, 0, 1400, 900), 1024, 4.0) == 1          # larger, but within 1.5x: still native
+    assert dt.scale_for((0, 0, 2048, 1024), 1024, 4.0) == 0.5       # far larger: scaled down to crop_size
+    assert dt.scale_for((0, 0, 100, 50), 1024, 2.5) == 2
+    assert [dt.padded(n) for n in (1, 16, 17, 805)] == [16, 16, 32, 816]
 
 
 def test_blend_mask_covers_the_part_and_fades_out():
@@ -91,7 +92,7 @@ class FakeSampler:
     def __call__(self, pixels, noise_mask, p, seed):
         self.calls.append({"shape": tuple(pixels.shape), "mask": tuple(noise_mask.shape), "part": p.part,
                            "seed": seed, "prompt": p.prompt, "mask_max": float(noise_mask.max())})
-        return torch.full_like(pixels, 0.1 * (len(self.calls)))
+        return torch.full_like(pixels, 0.1 * (len(self.calls))), None
 
 
 def test_detail_changes_only_the_masked_parts():
@@ -112,7 +113,7 @@ def test_detail_changes_only_the_masked_parts():
         h, w, _ = c["shape"]
         assert h % 16 == 0 and w % 16 == 0 and c["mask"] == (h, w) and c["mask_max"] <= 1.0
     eyes = s.calls[2]
-    assert max(eyes["shape"][:2]) <= 256 and min(eyes["shape"][:2]) >= 64 - 16   # min context, capped upscale
+    assert max(eyes["shape"][:2]) <= 256 + 15 and min(eyes["shape"][:2]) >= 2 * 64   # >= 64 px context, upscaled
 
 
 def test_each_pass_sees_the_image_as_detailed_so_far():
@@ -121,10 +122,45 @@ def test_each_pass_sees_the_image_as_detailed_so_far():
 
     def sampler(pixels, noise_mask, p, seed):
         seen.append(float(pixels.mean()))
-        return torch.ones_like(pixels)
+        return torch.ones_like(pixels), None
     img = torch.zeros(1, H, W, 3)
     dt.detail(img, masks, sampler, denoise=0.35, crop_size=256, padding=0.3, max_upscale=4.0, grow=0, feather=0, seed=0)
     assert seen[0] == 0 and seen[1] > 0                     # the face crop already holds the redrawn skin
+
+
+def sharp_image():
+    torch.manual_seed(0)
+    checker = ((torch.arange(W)[None, :, None] // 3 + torch.arange(H)[:, None, None] // 3) % 2).float()
+    return (torch.rand(1, H, W, 3) * 0.5 + checker * 0.5).clamp(0, 1)
+
+
+def test_an_unchanged_redraw_returns_the_image_unchanged():
+    """A sampler that changes nothing (like denoise 0): with detail restoration the image comes back as it
+    was, even through upscaled crops; without it, only crops sampled at their own size are exact."""
+    masks, img = two_characters(), sharp_image()
+    identity = lambda pixels, noise_mask, p, seed: (pixels.clone(), pixels.clone())
+    out = dt.detail(img, masks, identity, denoise=0.0, crop_size=256, padding=0.3, max_upscale=4.0, grow=4,
+                    feather=8, seed=0, restore=1.0)
+    assert torch.allclose(out, img, atol=1e-6)
+    no_ref = lambda pixels, noise_mask, p, seed: (pixels.clone(), None)
+    big = character("big", {"skin": (10, 10, 290, 190)})            # crop ~ the whole image: native size
+    one = cm.CharacterMasks([cm.FrameMasks(W, H, [big])])
+    out = dt.detail(img, one, no_ref, denoise=0.0, crop_size=256, padding=0.3, max_upscale=4.0, grow=4,
+                    feather=8, seed=0, restore=1.0)
+    assert torch.allclose(out, img, atol=1e-6)                       # padded, never resampled
+
+
+def test_restoration_keeps_the_models_change_on_the_original_detail():
+    masks, img = two_characters(), sharp_image()
+
+    def bluer(pixels, noise_mask, p, seed):          # the round trip blurs; the model shifts the colour
+        ref = dt.gaussian_blur(pixels[..., 0], 1.5)[..., None].repeat(1, 1, 3)
+        return ref + torch.tensor([0.0, 0.0, 0.2]), ref
+    out = dt.detail(img, masks, bluer, denoise=0.35, crop_size=256, padding=0.3, max_upscale=4.0, grow=0,
+                    feather=0, seed=0, restore=1.0)
+    inside = masks.frames[0].boxes[1].parts["face"]                  # bob's face: one pass
+    expected = (img[0] + torch.tensor([0.0, 0.0, 0.2])).clamp(0, 1)
+    assert torch.allclose(out[0][inside], expected[inside], atol=1e-4)   # sharp original + the change
 
 
 def test_frames_without_passes_pass_through():
@@ -140,7 +176,10 @@ class FakeVAE:
         assert pixels.shape[1] % 16 == 0 and pixels.shape[2] % 16 == 0
         return pixels.permute(0, 3, 1, 2)[:, :, ::16, ::16].repeat(1, 2, 1, 1)[:, :4]
 
+    decodes = 0
+
     def decode(self, latent):                 # back to pixels, as a flat colour from the latent
+        FakeVAE.decodes += 1
         b, c, h, w = latent.shape
         return latent[:, :3].repeat_interleave(16, 2).repeat_interleave(16, 3).permute(0, 2, 3, 1).clamp(0, 1)
 
@@ -205,7 +244,7 @@ def run_node(node_mod, masks, **kw):
 
 def test_node_samples_each_part_with_its_loras_prompt_and_negative(fake_comfy):
     node_mod, calls = fake_comfy
-    (out,), args = run_node(node_mod, two_characters(), negative="NEG")
+    (out,), args = run_node(node_mod, two_characters(), negative="NEG", restore_detail=0.0)
     assert out.shape == (1, H, W, 3)
     ks = calls["ksampler"]
     assert len(ks) == 4 and [k["seed"] for k in ks] == [5, 6, 7, 8]
@@ -219,6 +258,16 @@ def test_node_samples_each_part_with_its_loras_prompt_and_negative(fake_comfy):
         assert k["latent"][2:] == (mh // 16, mw // 16)
     assert torch.allclose(out[0, 42, 50], torch.full((3,), 0.9))    # redrawn inside the part
     assert torch.equal(out[0, 195, 295], args["image"][0, 195, 295])   # untouched far away
+
+
+def test_node_decodes_a_reference_for_detail_restoration(fake_comfy):
+    node_mod, calls = fake_comfy
+    FakeVAE.decodes = 0
+    run_node(node_mod, two_characters(), restore_detail=0.0)
+    assert FakeVAE.decodes == 4                                      # one per pass
+    FakeVAE.decodes = 0
+    run_node(node_mod, two_characters())                             # default restore_detail = 1
+    assert FakeVAE.decodes == 8                                      # plus the unredrawn reference
 
 
 def test_node_without_negative_encodes_an_empty_one(fake_comfy):
