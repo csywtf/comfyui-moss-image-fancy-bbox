@@ -58,7 +58,7 @@ def test_two_loras_in_one_box_sum_inside_and_stay_out_of_the_rest():
     d = parse_document(doc({"bbox": [-32, -32, 32, 0], "loras": [{"lora": "a", "weight": 1.0}, {"lora": "b", "weight": 0.5}]}))
     (d0, u0, _), (d1, u1, _) = make_lora(lin, seed=1), make_lora(lin, seed=2)
     ctrl = RegionalLoraController(d.loras, [[target("blocks.0.qkv", d0, u0)], [target("blocks.0.qkv", d1, u1)]], layout,
-                                  toy.W, toy.H, toy.VAE, toy.PATCH, 0.0, 0.0, 10, True).bind(model)
+                                  toy.W, toy.H, 0.0, 0.0, 10, True, patch_size=toy.PATCH).bind(model)
     seen = {}
     def capture_base(m, a, o):
         seen.setdefault("x", a[0].detach().clone())

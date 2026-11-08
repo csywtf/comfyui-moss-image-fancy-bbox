@@ -1,7 +1,7 @@
 """The "MOSS-Image Layout Discovery" node: runs the layout discovery inside ComfyUI (FR-12).
 
 Queue it once with the MOSS-Image MODEL, CLIP and VAE. It shows a report and the probe images; copy
-the values it prints into the advanced options of "MOSS-Image Regional LoRA + Layout Prompt".
+the values it prints into the Advanced group of "MOSS-Image Regional LoRA + Layout Prompt"'s Canvas panel.
 Nothing is saved or changed: the node only measures and reports.
 """
 
@@ -55,7 +55,7 @@ class MossLayoutDiscovery:
     FUNCTION = "run"
     CATEGORY = "model_patches/moss_image"
     DESCRIPTION = ("Measures where MOSS-Image puts text, image and source-image tokens, and reports the values to "
-                   "set in the advanced options of MOSS-Image Regional LoRA + Layout Prompt. Run it once; it "
+                   "set in the Advanced group of MOSS-Image Regional LoRA + Layout Prompt's Canvas panel. Run it once; it "
                    "changes nothing.")
 
     def run(self, model, clip, vae, width, height, seed, prompt, edit_image=None, edit_methods="default, index_timestep_zero", probe_strength=8.0, patch_size=0, blocks=""):

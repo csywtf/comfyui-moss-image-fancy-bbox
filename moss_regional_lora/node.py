@@ -78,18 +78,12 @@ class MossRegionalLora:
             "required": {
                 "model": ("MODEL",),
                 "width": ("INT", {"default": 1024, "min": 16, "max": 16384, "step": 16,
-                                  "tooltip": "Width in pixels of the image being generated. Must match the latent."}),
+                                  "tooltip": "Width in pixels of the image being generated. Must match the latent (checked when sampling)."}),
                 "height": ("INT", {"default": 1024, "min": 16, "max": 16384, "step": 16,
-                                   "tooltip": "Height in pixels of the image being generated. Must match the latent."}),
+                                   "tooltip": "Height in pixels of the image being generated. Must match the latent (checked when sampling)."}),
                 "regions": ("STRING", {"multiline": True, "default": DEFAULT_REGIONS,
                                        "tooltip": "Region list as JSON, edited with the canvas below. "
                                                   "Boxes are [y_min, x_min, y_max, x_max] px from the canvas centre."}),
-                "vae_downscale": ("INT", {"default": 16, "min": 1, "max": 64,
-                                          "tooltip": "Pixels per latent cell. ComfyUI's MOSS-Image latent format "
-                                                     "(Flux2) is 16. Confirm with tools/discover_moss_layout.py."}),
-                "patch_size": ("INT", {"default": 1, "min": 1, "max": 16,
-                                       "tooltip": "Latent cells per transformer token along each axis. "
-                                                  "Confirm with tools/discover_moss_layout.py."}),
                 "ramp_start": ("FLOAT", {"default": 0.15, "min": 0.0, "max": 1.0, "step": 0.01, "advanced": True,
                                          "tooltip": "Only for boxes without their own strength curve (workflows saved "
                                                     "before curves): fraction of the steps at which the LoRA starts "
@@ -129,11 +123,14 @@ class MossRegionalLora:
             },
         }
 
-    RETURN_TYPES = ("MODEL", "STRING")
-    RETURN_NAMES = ("model", "prompt")
+    # new outputs go last, so links in saved workflows keep their slots
+    RETURN_TYPES = ("MODEL", "STRING", "INT", "INT")
+    RETURN_NAMES = ("model", "prompt", "width", "height")
     OUTPUT_TOOLTIPS = ("The model with each box's LoRA applied inside its box.",
                        "The MOSS-Image layout prompt (same format as MOSS-Image Layout Prompt); "
-                       "connect it to the positive text encode.")
+                       "connect it to the positive text encode.",
+                       "The canvas width; connect it to the empty latent node so the image matches the boxes.",
+                       "The canvas height; connect it to the empty latent node so the image matches the boxes.")
     FUNCTION = "apply"
     CATEGORY = "model_patches/moss_image"
     DESCRIPTION = ("Draw boxes for a MOSS-Image generation. Each box can carry a layout-prompt caption, a LoRA "
@@ -145,7 +142,7 @@ class MossRegionalLora:
         # The hooks live outside ModelPatcher's weight-patch tracking; never let the cache reuse us (NFR-4).
         return float("nan")
 
-    def apply(self, model, width, height, regions, vae_downscale, patch_size, ramp_start, ramp_end, steps,
+    def apply(self, model, width, height, regions, ramp_start, ramp_end, steps,
               strict, caption="", text_position=None, image_order=None, source_tokens=None):
         # an API prompt without these options gets the same defaults as the UI
         text_position = MEASURED_TEXT_POSITION if text_position is None else text_position
@@ -161,7 +158,7 @@ class MossRegionalLora:
         def out(summary):
             summary.setdefault("prompt_items", len(doc.prompt_items))
             summary.setdefault("notes", doc.notes)
-            return {"ui": {"moss_regional_lora": [summary]}, "result": (m, prompt)}
+            return {"ui": {"moss_regional_lora": [summary]}, "result": (m, prompt, width, height)}
 
         specs = doc.loras
         if not specs:
@@ -171,7 +168,7 @@ class MossRegionalLora:
         config = resolve_config(text_position, image_order, source_tokens)
         layout = load_layout(config, strict=strict)  # raises in strict mode if undiscovered (FR-11)
         if layout is None:
-            msg = ("MOSS-Image layout is not set (advanced options; values from the MOSS-Image Layout Discovery "
+            msg = ("MOSS-Image layout is not set (Canvas panel, Advanced; values from the MOSS-Image Layout Discovery "
                    "node); strict is off, so the model is passed through WITHOUT any regional LoRA.")
             log.warning("[MOSS Regional LoRA] %s", msg)
             return out({"status": "inactive", "message": msg})
@@ -185,9 +182,17 @@ class MossRegionalLora:
             targets.append(parsed.targets)
             parse_skipped += [(spec.lora, k, why) for k, why in parsed.skipped]
 
+        # The token grid comes from the latent at sampling time: one token per patch_size x patch_size
+        # latent cells (MOSS-Image has no patch_size attribute: one token per cell). The latent format's
+        # downscale only checks that the latent is the canvas size.
+        patch = getattr(diffusion_model, "patch_size", 1)
+        latent_format = getattr(getattr(m, "model", None), "latent_format", None)
+        downscale = getattr(latent_format, "spacial_downscale_ratio", None)
         controller = RegionalLoraController(
-            specs, targets, layout, width, height, vae_downscale, patch_size,
-            ramp_start, ramp_end, steps, strict).bind(diffusion_model)
+            specs, targets, layout, width, height, ramp_start, ramp_end, steps, strict,
+            patch_size=patch if isinstance(patch, int) and patch >= 1 else 1,
+            latent_downscale=downscale if isinstance(downscale, int) and downscale >= 1 else None,
+        ).bind(diffusion_model)
         bind_skipped = [(specs[i].lora, k, why) for i, k, why in controller.skipped]
         skipped = parse_skipped + bind_skipped
 

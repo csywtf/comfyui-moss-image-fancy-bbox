@@ -32,7 +32,7 @@ import torch
 import torch.nn.functional as F
 
 from .curve import evaluate as evaluate_curve, legacy_ramp
-from .geometry import coverage_grid, patch_grid_size, raster_flatten
+from .geometry import grid_coverage, raster_flatten
 from .layout import DISCOVERY_TOOL, Layout
 from .lora_file import LoraTarget
 from .regions import RegionSpec
@@ -204,22 +204,25 @@ class RegionalLoraController:
     """Owns the hooks for one node execution. Created by the node, injected by ModelPatcher."""
 
     def __init__(self, regions: Sequence[RegionSpec], targets_per_region: Sequence[Sequence[LoraTarget]],
-                 layout: Layout, width: int, height: int, vae_downscale: int, patch_size: int,
-                 ramp_start: float, ramp_end: float, steps: int, strict: bool):
+                 layout: Layout, width: int, height: int,
+                 ramp_start: float, ramp_end: float, steps: int, strict: bool,
+                 patch_size: int = 1, latent_downscale: Optional[int] = None):
+        """``width``/``height`` are the canvas the boxes are drawn on. The token grid is read from each
+        call's latent: ``patch_size`` latent cells per token side (MOSS-Image: 1, one token per cell), and
+        ``latent_downscale`` (the model's pixels per latent cell, if known) is only used to check that the
+        latent is the canvas size."""
         if len(regions) != len(targets_per_region):
             raise ValueError("one target list per region")
         self.regions = list(regions)
         self.targets_per_region = [list(t) for t in targets_per_region]
         self.layout = layout
         self.width, self.height = int(width), int(height)
-        self.vae_downscale, self.patch_size = int(vae_downscale), int(patch_size)
-        self.rows, self.cols = patch_grid_size(self.width, self.height, self.vae_downscale, self.patch_size)
+        self.patch_size = int(patch_size)
+        self.latent_downscale = int(latent_downscale) if latent_downscale else None
         self.ramp_start, self.ramp_end = float(ramp_start), float(ramp_end)
         self.steps = int(steps)
         self.strict = bool(strict)
-        self.image_masks = [raster_flatten(coverage_grid(r.bbox, self.width, self.height,
-                                                         self.vae_downscale, self.patch_size))
-                            for r in self.regions]
+        self._grid_masks: Dict[Tuple[int, int], List[List[float]]] = {}   # (rows, cols) -> flat mask per box
         node_ramp = legacy_ramp(self.ramp_start, self.ramp_end)
         self.curves = [r.curve if r.curve is not None else node_ramp for r in self.regions]
         self.state = _State()
@@ -348,16 +351,45 @@ class RegionalLoraController:
         self._fallback_step = (sigma, step)
         return step, self.steps
 
-    def _sequence_masks(self, seq_len, n_text, n_src, device, dtype) -> Optional[torch.Tensor]:
-        key = (seq_len, n_text, n_src, device, dtype)
+    def image_masks(self, rows: int, cols: int) -> List[List[float]]:
+        """Each box's coverage on a ``rows x cols`` token grid, raster-flattened (cached per grid)."""
+        masks = self._grid_masks.get((rows, cols))
+        if masks is None:
+            masks = self._grid_masks[(rows, cols)] = [
+                raster_flatten(grid_coverage(r.bbox, self.width, self.height, rows, cols)) for r in self.regions]
+        return masks
+
+    def _sequence_masks(self, grid, seq_len, n_text, n_src, device, dtype) -> Optional[torch.Tensor]:
+        key = (grid, seq_len, n_text, n_src, device, dtype)
         t = self._seq_cache.get(key)
         if t is None:
-            rows = [self.layout.sequence_mask(m, seq_len, n_text, n_src) for m in self.image_masks]
+            rows = [self.layout.sequence_mask(m, seq_len, n_text, n_src) for m in self.image_masks(*grid)]
             if any(r is None for r in rows):
                 return None
             t = torch.tensor(rows, dtype=torch.float32).to(device=device, dtype=dtype)  # [R, L]
             self._seq_cache[key] = t
         return t
+
+    def _check_grid(self, h: int, w: int) -> Optional[Tuple[int, int]]:
+        """The token grid of an ``h x w`` latent, or None (after failing) if it can't be the canvas."""
+        p = self.patch_size
+        if h % p or w % p:
+            self._fail(f"latent {w}x{h} does not tile into tokens of {p}x{p} latent cells")
+            return None
+        ds = self.latent_downscale
+        if ds is not None:
+            if (w * ds, h * ds) != (self.width, self.height):
+                self._fail(f"the latent being sampled is {w}x{h}, which at this model's {ds} px per latent cell "
+                           f"is a {w * ds}x{h * ds} px image, but the node's canvas is {self.width}x{self.height}. "
+                           "Set width/height to the generated image size (area-cropped conditioning is not "
+                           "supported).")
+                return None
+        elif abs(self.width / w - self.height / h) > 0.01 * max(self.width / w, self.height / h):
+            # downscale unknown: boxes map proportionally, which needs the same aspect ratio
+            self._fail(f"the latent being sampled is {w}x{h}, a different aspect ratio from the node's "
+                       f"{self.width}x{self.height} canvas. Set width/height to the generated image size.")
+            return None
+        return h // p, w // p
 
     def begin_call(self, x: torch.Tensor, transformer_options: dict, c_crossattn=None, ref_latents=None,
                    dtype: Optional[torch.dtype] = None) -> bool:
@@ -373,16 +405,10 @@ class RegionalLoraController:
             self._fail(f"expected a 4-D image latent [B, C, H, W], got shape {tuple(x.shape)}")
             return False
         B, h, w = x.shape[0], x.shape[-2], x.shape[-1]
-        if h * self.vae_downscale != self.height or w * self.vae_downscale != self.width:
-            self._fail(f"the latent being sampled is {w}x{h}, which at vae_downscale={self.vae_downscale} is "
-                       f"{w * self.vae_downscale}x{h * self.vae_downscale} px, but the node's canvas is "
-                       f"{self.width}x{self.height}. Set width/height to the generated image size (area-cropped "
-                       "conditioning is not supported).")
+        grid = self._check_grid(h, w)
+        if grid is None:
             return False
-        n_image = self.rows * self.cols
-        if (h // self.patch_size) * (w // self.patch_size) != n_image or h % self.patch_size or w % self.patch_size:
-            self._fail(f"latent {w}x{h} does not tile into the {self.cols}x{self.rows} patch grid at patch_size={self.patch_size}")
-            return False
+        n_image = grid[0] * grid[1]
         n_text = int(c_crossattn.shape[1]) if torch.is_tensor(c_crossattn) and c_crossattn.dim() >= 2 else 0
         n_src = 0
         for ref in (ref_latents or []):
@@ -415,7 +441,7 @@ class RegionalLoraController:
         coefs = {}
         for src in src_variants:
             seq_len = self.layout.sequence_length(n_image, n_text, src)
-            seq = self._sequence_masks(seq_len, n_text, src, device, dtype)
+            seq = self._sequence_masks(grid, seq_len, n_text, src, device, dtype)
             coef = seq[:, None, :, None] * row_scale[None, :, None, None] * box_scale[:, None, None, None]  # [R, B, L, 1]
             coefs[(B, seq_len)] = list(coef.unbind(0))
         st.coefs = coefs
@@ -441,8 +467,8 @@ class RegionalLoraController:
             self._fail(f"no LoRA-targeted linear module saw the expected joint sequence (length "
                        f"{' or '.join(map(str, lengths))}: {n_image} image + {n_text} text tokens"
                        f"{f' (+ {n_src} source)' if len(lengths) > 1 else ''}). Hooks reported: {seen[:4]}. "
-                       f"Either vae_downscale/patch_size are wrong for this model or the layout constants in "
-                       f"layout_config.py do not match it; re-run {DISCOVERY_TOOL}.")
+                       f"Either this model does not make one token per {self.patch_size}x{self.patch_size} latent "
+                       f"cells or the layout options do not match it; re-run {DISCOVERY_TOOL}.")
         elif self._calls == 1 and not _compiling() and st.fired:
             silent = [p for p in self.gates if p not in st.fired and p not in {u[0] for u in st.unmatched}]
             if silent:

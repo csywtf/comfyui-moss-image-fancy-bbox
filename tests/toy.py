@@ -38,14 +38,14 @@ class ToyDiT(nn.Module):
     def __init__(self, layout: Layout, dim=DIM, patch=PATCH):
         super().__init__()
         self.layout = layout
-        self.patch = patch
+        self.patch_size = patch
         self.img_in = nn.Linear(LATENT_C * patch * patch, dim)
         self.blocks = nn.ModuleList([Block(dim), Block(dim)])
         self.out = nn.Linear(dim, LATENT_C * patch * patch)
 
     def tokens(self, latent):
         B, C, h, w = latent.shape
-        p = self.patch
+        p = self.patch_size
         t = latent.reshape(B, C, h // p, p, w // p, p).permute(0, 2, 4, 1, 3, 5).reshape(B, (h // p) * (w // p), C * p * p)
         return t  # raster order
 
@@ -91,7 +91,8 @@ def target(path, down, up, alpha=None, offset=0, size=None):
 def controller(model, regions, targets, layout, ramp=(0.0, 0.0), steps=10, strict=True):
     specs = [RegionSpec(index=i, name=f"r{i}", bbox=tuple(b), lora=f"l{i}", weight=w)
              for i, (b, w) in enumerate(regions)]
-    return RegionalLoraController(specs, targets, layout, W, H, VAE, PATCH, ramp[0], ramp[1], steps, strict).bind(model)
+    return RegionalLoraController(specs, targets, layout, W, H, ramp[0], ramp[1], steps, strict,
+                                  patch_size=PATCH, latent_downscale=VAE).bind(model)
 
 
 def latent(batch=1, dtype=torch.float64):
