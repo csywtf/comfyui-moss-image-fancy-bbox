@@ -44,8 +44,9 @@ class _Sampler:
     """Re-samples one crop with ComfyUI's VAE and sampler, with a pass's prompt and LoRAs (model only, as
     the main node applies them)."""
 
-    def __init__(self, model, clip, vae, negative, steps, cfg, sampler_name, scheduler):
+    def __init__(self, model, clip, vae, negative, steps, cfg, sampler_name, scheduler, reference=True):
         self.model, self.clip, self.vae = model, clip, vae
+        self.reference = reference
         self.steps, self.cfg, self.sampler_name, self.scheduler = steps, cfg, sampler_name, scheduler
         self._models = {}
         self._conds = {}
@@ -67,14 +68,17 @@ class _Sampler:
 
     def __call__(self, pixels, noise_mask, p, seed):
         import nodes
-        latent = {"samples": self.vae.encode(pixels[None, ..., :3]),
-                  "noise_mask": noise_mask.reshape(1, 1, *noise_mask.shape)}
+        encoded = self.vae.encode(pixels[None, ..., :3])
+        latent = {"samples": encoded, "noise_mask": noise_mask.reshape(1, 1, *noise_mask.shape)}
         out = nodes.common_ksampler(self._patched(p.loras), seed, self.steps, self.cfg, self.sampler_name,
                                     self.scheduler, self._encode(p.prompt), self.negative, latent,
                                     denoise=p.denoise)[0]
-        img = self.vae.decode(out["samples"])
-        img = img.reshape(-1, *img.shape[-3:])        # video-style VAEs return [B, T, H, W, C]
-        return img[0]
+        # the same crop decoded without redrawing: what the VAE round trip alone gives, for restoring detail
+        return self._decode(out["samples"]), (self._decode(encoded) if self.reference else None)
+
+    def _decode(self, samples):
+        img = self.vae.decode(samples)
+        return img.reshape(-1, *img.shape[-3:])[0]     # video-style VAEs return [B, T, H, W, C]
 
 
 class MossRegionalDetailer:
@@ -117,9 +121,14 @@ class MossRegionalDetailer:
             },
             "optional": {
                 "negative": ("CONDITIONING", {"tooltip": "Your negative prompt (empty if not connected)."}),
-                "max_upscale": ("FLOAT", {"default": 4.0, "min": 1.0, "max": 16.0, "step": 0.5, "advanced": True,
-                                          "tooltip": "Small parts (eyes) are upscaled at most this much; their crop "
-                                                     "takes more context instead."}),
+                "max_upscale": ("FLOAT", {"default": 4.0, "min": 1.0, "max": 16.0, "step": 1.0, "advanced": True,
+                                          "tooltip": "Small parts (eyes) are upscaled at most this much (a whole "
+                                                     "number); their crop takes more context instead."}),
+                "restore_detail": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 1.0, "step": 0.05, "advanced": True,
+                                             "tooltip": "Put back the fine detail the crop's round trip (resizing, "
+                                                        "VAE) loses, keeping only the model's changes. 1: denoise 0 "
+                                                        "returns the image unchanged. Lower it if a high denoise "
+                                                        "leaves faint traces of the old features."}),
             },
         }
 
@@ -132,7 +141,8 @@ class MossRegionalDetailer:
                    "Masks) with that character's caption and LoRAs, one part at a time.")
 
     def run(self, image, character_masks, model, clip, vae, seed, steps, cfg, sampler_name, scheduler, denoise,
-            crop_size, padding, mask_grow, feather, stop_before_detailing, negative=None, max_upscale=4.0):
+            crop_size, padding, mask_grow, feather, stop_before_detailing, negative=None, max_upscale=4.0,
+            restore_detail=1.0):
         if stop_before_detailing:
             from comfy_execution.graph_utils import ExecutionBlocker
             log.info("[MOSS Regional Detailer] stopped before detailing (untick 'stop_before_detailing' to run)")
@@ -143,12 +153,14 @@ class MossRegionalDetailer:
             return (image,)
         import comfy.utils
         bar = comfy.utils.ProgressBar(total)
-        sampler = _Sampler(model, clip, vae, negative, steps, cfg, sampler_name, scheduler)
+        sampler = _Sampler(model, clip, vae, negative, steps, cfg, sampler_name, scheduler,
+                           reference=restore_detail > 0)
 
         def on_pass(k, p):
             log.info("[MOSS Regional Detailer] %d/%d: %s %s (denoise %.2f)", k + 1, total, p.box, p.part, p.denoise)
             bar.update(1)
 
         out = detail(image, character_masks, sampler, denoise=denoise, crop_size=crop_size, padding=padding,
-                     max_upscale=max_upscale, grow=mask_grow, feather=feather, seed=seed, on_pass=on_pass)
+                     max_upscale=max_upscale, grow=mask_grow, feather=feather, seed=seed, on_pass=on_pass,
+                     restore=restore_detail)
         return (out.to(image.device, image.dtype),)
