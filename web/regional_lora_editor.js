@@ -1488,6 +1488,10 @@ app.registerExtension({
       // every native input is edited in the editor's Canvas panel instead; hidden widgets keep their
       // values, so saving, queueing and the API are unchanged
       for (const w of this.widgets || []) hideWidget(w);
+      // queueing sends only what affects the image (the workflow keeps everything): changing a box's
+      // colour, lock, group, name or the grid doesn't invalidate ComfyUI's cache
+      const wRegions = this.widgets?.find((w) => w.name === "regions");
+      if (wRegions) wRegions.serializeValue = () => S.backendRegions(wRegions.value);
       const widget = this.addDOMWidget(EDITOR_WIDGET, "moss_region_editor", editor.root, {
         serialize: false,
         hideOnZoom: false,

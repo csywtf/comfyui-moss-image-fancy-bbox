@@ -140,6 +140,11 @@ JSON, to fix it); it never overwrites the text.
   **Edit JSON**, and drawing aids: grid, snap, and an optional reference image from ComfyUI's `input`
   folder with an opacity slider (a drawing aid only).
 
+**Caching:** queueing sends the backend only what affects the image (box positions and order, labels,
+captions, text, palettes, LoRAs and curves; hidden boxes are left out). Names, colours, locks, groups
+and the grid / reference-image settings stay in the workflow but aren't sent, so changing them doesn't
+regenerate the image.
+
 Boxes are stored as `[y_min, x_min, y_max, x_max]`, integer pixels, measured from the canvas centre
 with y pointing down. This is the same convention as ComfyUI's *MOSS-Image Layout Prompt* node. The
 selected box's stored value is shown above the canvas.
@@ -237,7 +242,9 @@ If the image isn't the canvas size (an upscaled image), the boxes are scaled to 
 wrong outline or only partly in either. Select the box, then **Shift-click** the preview on that
 character's arm or hand: a **+** point. SAM3 traces the region at the point and adds it to her outline,
 and it's hers even where another box is on top. **Alt-click** puts a **−** point on something that isn't
-hers; that region is removed from her outline. Click a point to remove it; **Clear** removes them all.
+hers; that region is removed from her outline. Points are drawn in their box's colour (+ filled, −
+ringed); with a box selected, the other boxes' points are faint. Click a point to remove it; **Clear**
+removes them all.
 A point needs no type: SAM3 works out the region from where you click (add a second point if it only
 takes the sleeve). Each box's + points also count as − points for every other box. Points are stored as
 fractions of the image, and skin and hands then follow the corrected outlines. Like any detail setting,
