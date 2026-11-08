@@ -123,6 +123,7 @@ def fake_comfy(monkeypatch, tmp_path):
     utils.load_torch_file = lambda path, safe_load=True: dict(sd)
     fp = types.ModuleType("folder_paths")
     fp.get_full_path_or_raise = lambda folder, name: str(tmp_path / name)
+    fp.get_full_path = lambda folder, name: str(tmp_path / name) if (tmp_path / name).exists() else None
     comfy.patcher_extension, comfy.utils = pe, utils
     for name, mod in (("comfy", comfy), ("comfy.patcher_extension", pe), ("comfy.utils", utils), ("folder_paths", fp)):
         monkeypatch.setitem(sys.modules, name, mod)
@@ -154,10 +155,43 @@ def set_layout(monkeypatch, t="suffix", o="raster", s="none"):
     monkeypatch.setattr(layout_config, "SOURCE_TOKENS", s)
 
 
-def test_is_changed_always(fake_comfy):
+def test_cache_fingerprint_follows_the_lora_files(fake_comfy, tmp_path):
+    """Same inputs and unchanged LoRA files: same fingerprint, so ComfyUI reuses the cached result and
+    nothing after the node re-runs. Overwriting a used LoRA file changes it (NFR-4)."""
     _, node = fake_comfy
-    v = node.MossRegionalLora.IS_CHANGED(width=1)
-    assert isinstance(v, float) and math.isnan(v)
+    fp = node.MossRegionalLora.IS_CHANGED
+    regions = regions_json((FULL, 1.0))
+    first = fp(regions=regions, width=toy.W)
+    assert isinstance(first, str) and LORA_NAME in first
+    assert fp(regions=regions, width=toy.W) == first
+    lora = tmp_path / LORA_NAME
+    lora.write_bytes(b"a different, longer file")
+    assert fp(regions=regions) != first
+    # hidden boxes don't load their file, so they don't count; no LoRA at all is a stable empty fingerprint
+    hidden = json.dumps({"version": 2, "regions": [{"id": "h", "bbox": list(FULL), "visible": False,
+                                                    "loras": [{"lora": LORA_NAME, "weight": 1}]}]})
+    assert fp(regions=hidden) == fp(regions=json.dumps({"version": 2, "regions": []})) == ""
+    # a LoRA that isn't on disk is named as missing (the run itself raises)
+    assert "missing" in fp(regions=regions_json((FULL, 1.0)).replace(LORA_NAME, "gone.safetensors"))
+    # regions wired from another node can't be fingerprinted here: always re-run, as before
+    assert math.isnan(fp(width=1))
+    # unparsable text: re-run whenever it changes (the run reports the error)
+    assert fp(regions="{oops") == "{oops"
+
+
+def test_cached_result_is_reusable(fake_comfy, monkeypatch):
+    """Reusing one execution's model for a second run (what a cache hit does) gates exactly as before."""
+    patcher, node = fake_comfy
+    set_layout(monkeypatch)
+    base = patcher.dm(latent(), context())
+    m = apply(node, patcher, regions_json((FULL, 1.0)))["result"][0]
+    outs = []
+    for _ in range(2):                       # two queue runs on the same cached patcher
+        m.inject_model()
+        outs.append(m.apply_model(latent(), context(), topts()))
+        m.eject_model()
+        assert bit_identical(patcher.dm(latent(), context()), base)   # nothing left behind between runs
+    assert bit_identical(outs[0], outs[1]) and not bit_identical(outs[0], base)
 
 
 def test_strict_refuses_with_unset_layout(fake_comfy):
