@@ -129,7 +129,9 @@ class MasksEditor {
     this.errorBox = el("div", { class: "mrl-error" });
     this.statusLine = el("div", { class: "mrl-status" });
     this.root = el("div", { class: "mrl-root mcm-root", tabindex: "-1" }, [this.errorBox, el("div", { class: "mrl-main" }, [boxes, this.wrap, props]), this.statusLine]);
+    this.canvas.style.cursor = "default"; // not ComfyUI's drag hand
     this.canvas.addEventListener("pointerdown", (e) => this.onCanvasDown(e));
+    this.canvas.addEventListener("pointermove", (e) => this.onCanvasMove(e));
     this.root.addEventListener("pointerdown", (e) => e.stopPropagation());
     this.root.addEventListener("keydown", (e) => e.stopPropagation()); // typing here isn't a graph shortcut
   }
@@ -427,12 +429,39 @@ class MasksEditor {
   }
 
   // ------------------------------------------------------------------ preview
+  /** Layout geometry (CSS px before the graph's zoom), as the main editor does. */
   view() {
-    const r = this.wrap.getBoundingClientRect();
+    const cw = this.wrap.clientWidth;
+    const ch = this.wrap.clientHeight;
     const W = this.result?.width || this.src?.W || 1024;
     const H = this.result?.height || this.src?.H || 1024;
-    const s = Math.min((r.width - 2) / W, (r.height - 2) / H);
-    return { cw: r.width, ch: r.height, W, H, s, ox: (r.width - W * s) / 2, oy: (r.height - H * s) / 2 };
+    const s = Math.max(1e-6, Math.min((cw - 2) / W, (ch - 2) / H));
+    return { cw, ch, W, H, s, ox: (cw - W * s) / 2, oy: (ch - H * s) / 2 };
+  }
+
+  /** A pointer event in image pixels. The graph's zoom CSS-scales this editor, so the on-screen offset is
+   * normalised back to layout px first. */
+  eventPoint(e) {
+    const v = this.view();
+    const r = this.canvas.getBoundingClientRect();
+    const sx = r.width ? this.canvas.clientWidth / r.width : 1;
+    const sy = r.height ? this.canvas.clientHeight / r.height : 1;
+    return { x: ((e.clientX - r.left) * sx - v.ox) / v.s, y: ((e.clientY - r.top) * sy - v.oy) / v.s, v };
+  }
+
+  /** Index of the selected box's point under (x, y) image px, or -1. */
+  pointAt(region, x, y, v) {
+    return this.detailOf(region).points.findIndex((p) => Math.hypot((p.x * v.W - x) * v.s, (p.y * v.H - y) * v.s) <= POINT_HIT_PX);
+  }
+
+  onCanvasMove(e) {
+    const region = this.boxes().find(({ region }) => region.id === this.selected)?.region;
+    let cursor = "default";
+    if (region) {
+      const { x, y, v } = this.eventPoint(e);
+      cursor = this.pointAt(region, x, y, v) >= 0 ? "pointer" : "crosshair";
+    }
+    if (this.canvas.style.cursor !== cursor) this.canvas.style.cursor = cursor;
   }
 
   buildOverlay() {
@@ -493,15 +522,11 @@ class MasksEditor {
   }
 
   onCanvasDown(e) {
-    const v = this.view();
-    const b = this.canvas.getBoundingClientRect();
-    const x = (e.clientX - b.left - v.ox) / v.s;
-    const y = (e.clientY - b.top - v.oy) / v.s;
+    const { x, y, v } = this.eventPoint(e);
     const region = this.boxes().find(({ region }) => region.id === this.selected)?.region;
     if (region && this.doc().ok) {
-      const pts = this.detailOf(region).points;
       // click on one of the selected box's points: remove it
-      const near = pts.findIndex((p) => Math.hypot((p.x * v.W - x) * v.s, (p.y * v.H - y) * v.s) <= POINT_HIT_PX);
+      const near = this.pointAt(region, x, y, v);
       if (near >= 0) return this.updateDetail(region, (d) => d.points.splice(near, 1));
       // Shift-click: + (this is hers), Alt-click: - (this isn't)
       if ((e.shiftKey || e.altKey) && x >= 0 && y >= 0 && x <= v.W && y <= v.H) {
