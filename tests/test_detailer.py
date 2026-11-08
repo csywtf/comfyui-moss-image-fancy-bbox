@@ -298,3 +298,37 @@ def test_node_is_registered():
     req, opt = cls.INPUT_TYPES()["required"], cls.INPUT_TYPES()["optional"]
     assert req["character_masks"][0] == "MOSS_CHARACTER_MASKS" and "stop_before_detailing" in req
     assert opt["negative"][0] == "CONDITIONING" and cls.RETURN_TYPES == ("IMAGE",)
+
+
+# ------------------------------------------------------------------------- pieces far apart
+def test_split_mask_far_apart_pieces_and_near_ones():
+    hands = rect_mask(10, 150, 30, 170) | rect_mask(260, 20, 280, 40)          # opposite corners
+    pieces = dt.split_mask(hands, 0.3, 64, 18)
+    assert len(pieces) == 2
+    assert torch.equal(pieces[0], rect_mask(260, 20, 280, 40))                   # reading order: top first
+    assert torch.equal(pieces[1], rect_mask(10, 150, 30, 170))
+    assert torch.equal(pieces[0] | pieces[1], hands)
+    eyes = rect_mask(100, 50, 110, 55) | rect_mask(125, 50, 135, 55)              # close: one pass
+    assert len(dt.split_mask(eyes, 0.3, 64, 18)) == 1
+    fragments = rect_mask(10, 150, 30, 160) | rect_mask(10, 163, 30, 170)         # one hand in two bits
+    assert len(dt.split_mask(fragments, 0.3, 0, 0)) == 1
+    one = rect_mask(10, 10, 50, 50)
+    assert dt.split_mask(one, 0.3, 64, 18)[0] is one                              # a single piece: as it is
+
+
+def test_hands_far_apart_get_their_own_passes_and_upscaled_crops():
+    bob = character("bob", {"hands": (10, 150, 30, 170)}, detail={"parts": {"face": {"on": False}, "eyes": {"on": False},
+                                                                            "hands": {"on": True}}})
+    bob.parts["hands"] = rect_mask(10, 150, 30, 170) | rect_mask(260, 20, 280, 40)
+    masks = cm.CharacterMasks([cm.FrameMasks(W, H, [bob])])
+    passes = list(dt.plan(masks, 0.35, 0.3, 64, 12))
+    assert [(p.part, int(p.mask.sum())) for p in passes] == [("hands", 400), ("hands", 400)]
+    assert dt.count_passes(masks, 0.35, 0.3, 64, 12) == 2
+    s = FakeSampler()
+    img = torch.rand(1, H, W, 3)
+    out = dt.detail(img, masks, s, denoise=0.35, crop_size=256, padding=0.3, max_upscale=4.0, grow=4, feather=8, seed=3)
+    assert [c["seed"] for c in s.calls] == [3, 4]
+    for c in s.calls:                       # each a small crop around one hand, upscaled (was one crop spanning both)
+        assert max(c["shape"][:2]) <= 256 + 15 and min(c["shape"][:2]) >= 2 * 64
+    assert torch.allclose(out[0, 160, 20], torch.full((3,), 0.2))               # second pass: the lower hand
+    assert torch.allclose(out[0, 30, 270], torch.full((3,), 0.1))

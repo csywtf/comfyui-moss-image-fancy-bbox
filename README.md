@@ -292,6 +292,9 @@ fine (skin, hair, face, hands, eyes), each as its own pass on the image so far:
    A crop smaller than `crop_size` is upscaled by a whole number (2x, 3x, ..., Lanczos) up to `crop_size`
    and at most `max_upscale` times (advanced); small parts (eyes) take more context instead. A larger crop
    (hair, skin) is sampled at its own size. Either way it is padded, not resized, to whole 16 px cells.
+   A part in pieces far apart (two hands on either side of the body, skin on an arm and a midriff) is
+   detailed as one pass per group of pieces whose crops would overlap, so each gets its own upscaled
+   crop; two eyes stay one pass.
 2. **Re-sample** it with a noise mask, so only the part changes. Prompt: the box's caption, the box's
    detail prompt and the part's prompt (empty: "detailed face" and so on), all set in the Character Masks
    editor. LoRAs: the box's own (unless *Box LoRAs* is off) plus its detail-only LoRAs, applied to the
