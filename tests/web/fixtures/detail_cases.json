@@ -14,37 +14,43 @@
       "on": true,
       "prompt": "",
       "denoise": null,
-      "restore": null
+      "restore": null,
+      "whole_crop": false
      },
      "eyes": {
       "on": true,
       "prompt": "",
       "denoise": null,
-      "restore": null
+      "restore": null,
+      "whole_crop": false
      },
      "left_hand": {
       "on": false,
       "prompt": "",
       "denoise": null,
-      "restore": null
+      "restore": null,
+      "whole_crop": false
      },
      "right_hand": {
       "on": false,
       "prompt": "",
       "denoise": null,
-      "restore": null
+      "restore": null,
+      "whole_crop": false
      },
      "hair": {
       "on": false,
       "prompt": "",
       "denoise": null,
-      "restore": null
+      "restore": null,
+      "whole_crop": false
      },
      "skin": {
       "on": false,
       "prompt": "",
       "denoise": null,
-      "restore": null
+      "restore": null,
+      "whole_crop": false
      }
     },
     "paint": []
@@ -63,37 +69,43 @@
       "on": true,
       "prompt": "",
       "denoise": null,
-      "restore": null
+      "restore": null,
+      "whole_crop": false
      },
      "eyes": {
       "on": true,
       "prompt": "",
       "denoise": null,
-      "restore": null
+      "restore": null,
+      "whole_crop": false
      },
      "left_hand": {
       "on": false,
       "prompt": "",
       "denoise": null,
-      "restore": null
+      "restore": null,
+      "whole_crop": false
      },
      "right_hand": {
       "on": false,
       "prompt": "",
       "denoise": null,
-      "restore": null
+      "restore": null,
+      "whole_crop": false
      },
      "hair": {
       "on": false,
       "prompt": "",
       "denoise": null,
-      "restore": null
+      "restore": null,
+      "whole_crop": false
      },
      "skin": {
       "on": false,
       "prompt": "",
       "denoise": null,
-      "restore": null
+      "restore": null,
+      "whole_crop": false
      }
     },
     "paint": []
@@ -122,13 +134,15 @@
      },
      "skin": {
       "on": "yes",
-      "denoise": 3
+      "denoise": 3,
+      "whole_crop": "yes"
      },
      "tail": {
       "on": true
      },
      "face": {
-      "restore": 0.4
+      "restore": 0.4,
+      "whole_crop": true
      },
      "right_hand": {
       "on": false,
@@ -184,37 +198,43 @@
       "on": true,
       "prompt": "",
       "denoise": null,
-      "restore": 0.4
+      "restore": 0.4,
+      "whole_crop": true
      },
      "eyes": {
       "on": false,
       "prompt": "",
       "denoise": null,
-      "restore": null
+      "restore": null,
+      "whole_crop": false
      },
      "left_hand": {
       "on": true,
       "prompt": "five fingers",
       "denoise": 0.5,
-      "restore": null
+      "restore": null,
+      "whole_crop": false
      },
      "right_hand": {
       "on": false,
       "prompt": "",
       "denoise": null,
-      "restore": 1.0
+      "restore": 1.0,
+      "whole_crop": false
      },
      "hair": {
       "on": false,
       "prompt": "",
       "denoise": null,
-      "restore": null
+      "restore": null,
+      "whole_crop": false
      },
      "skin": {
       "on": false,
       "prompt": "",
       "denoise": 1,
-      "restore": null
+      "restore": null,
+      "whole_crop": false
      }
     },
     "paint": [

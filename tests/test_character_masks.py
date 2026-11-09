@@ -539,7 +539,8 @@ def test_detail_resolution_matches_the_editor():
         got = {"enabled": d.enabled, "prompt": d.prompt, "use_box_loras": d.use_box_loras,
                "loras": [list(e) for e in d.loras],
                "paint": sorted(d.paint),
-               "parts": {n: {"on": p.on, "prompt": p.prompt, "denoise": p.denoise, "restore": p.restore}
+               "parts": {n: {"on": p.on, "prompt": p.prompt, "denoise": p.denoise, "restore": p.restore,
+                                   "whole_crop": p.whole_crop}
                          for n, p in d.parts.items()}}
         assert got == case["expected"], case
     assert [p.name for p in cm.PARTS] == ["face", "eyes", "left_hand", "right_hand", "hair", "skin"]

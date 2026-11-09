@@ -13,6 +13,8 @@ as its own pass on the image so far:
 2. **Re-sample** it with a noise mask, so only the part changes: the prompt is the box's caption, the
    box's detail prompt and the part's prompt (or its hint, "detailed eyes"); the LoRAs are the box's own
    (unless turned off) plus its detail-only LoRAs; the denoise is the part's own or the node default.
+   A part set to *whole crop* is re-sampled without the noise mask: its surroundings are redrawn too,
+   so they don't pull it back to the old style (only the part is pasted back, step 4).
 3. **Scale back** by area averaging (the exact inverse of a whole-number upscale's size) and **restore
    detail**: the crop is also decoded without being redrawn, and what that round trip lost (resizing and
    the VAE) is added back, so only the model's changes are kept. At denoise 0 the image comes back
@@ -46,6 +48,7 @@ class Pass:
     loras: Tuple[Tuple[str, float], ...]       # (file, weight), applied to the model only
     denoise: float
     restore: Optional[float] = None            # detail restoration for this part; None = the node's
+    whole_crop: bool = False                   # redraw the whole crop, not just the part; paste back the part
 
 
 def part_prompt(b: CharacterMask, part: str) -> str:
@@ -62,7 +65,8 @@ def describe_pass(p: Pass) -> str:
     """One log line: whose part, with which denoise, LoRAs and prompt (so a run shows what was used)."""
     loras = ", ".join(f"{name} {w:g}" for name, w in p.loras) or "none"
     prompt = p.prompt if len(p.prompt) <= 160 else p.prompt[:157] + "..."
-    return f"{p.box} {p.part} (denoise {p.denoise:.2f}; LoRAs: {loras}; prompt: {prompt})"
+    crop = "; whole crop" if p.whole_crop else ""
+    return f"{p.box} {p.part} (denoise {p.denoise:.2f}{crop}; LoRAs: {loras}; prompt: {prompt})"
 
 
 def plan(masks: CharacterMasks, default_denoise: float, padding: float = 0.3, min_side: float = 0.0,
@@ -79,8 +83,10 @@ def plan(masks: CharacterMasks, default_denoise: float, padding: float = 0.3, mi
                 s = b.detail.parts.get(part)
                 denoise = s.denoise if s is not None and s.denoise is not None else default_denoise
                 restore = s.restore if s is not None else None
+                whole = bool(s.whole_crop) if s is not None else False
                 for piece in split_mask(m, padding, min_side, margin):
-                    yield Pass(f, b.name, part, piece, part_prompt(b, part), pass_loras(b), float(denoise), restore)
+                    yield Pass(f, b.name, part, piece, part_prompt(b, part), pass_loras(b), float(denoise), restore,
+                               whole)
 
 
 GRID = 256    # pieces are found on a grid this many cells across, so it stays quick on large images
@@ -272,7 +278,12 @@ def detail_frame(image: torch.Tensor, passes: Sequence[Pass], sample: Sampler, c
         crop = out[y0:y1, x0:x1, :3]
         a = soft[y0:y1, x0:x1]
         big = pad_to_cells(resize(crop, tw, th).clamp(0, 1))
-        big_mask = pad_to_cells(resize(a, tw, th, "area" if s < 1 else "lanczos").clamp(0, 1), value=0.0)
+        if p.whole_crop:
+            # the surroundings are redrawn too (not held fixed), so the new style isn't pulled back to the old;
+            # only the part is pasted back below
+            big_mask = torch.ones(big.shape[:2])
+        else:
+            big_mask = pad_to_cells(resize(a, tw, th, "area" if s < 1 else "lanczos").clamp(0, 1), value=0.0)
         result, reference = sample(big, big_mask, p, seed + k)
         back = "area" if s > 1 else "lanczos"          # area exactly undoes a whole-number upscale's size
         res = resize(result[:th, :tw, :3], w, h, back)

@@ -181,7 +181,7 @@ console.log("settings ok");
 await row("Alice").click();
 assert.match(await page.locator(".mrl-props .mrl-panel-head").innerText(), /Detail: Alice/);
 assert.match(await page.locator(".mrl-props").innerText(), /alice \(0\.8\)/);           // the box's own LoRAs
-const parts = page.locator(".mcm-parts input[type=checkbox]");
+const parts = page.locator(".mcm-parts input[type=checkbox]:not(.mcm-crop)");
 assert.deepEqual(await parts.evaluateAll((xs) => xs.map((x) => x.checked)), [true, true, false, false, false, false]);
 await parts.nth(2).check();                                                              // left hand
 let d = await detail();
@@ -201,6 +201,12 @@ await numbers.nth(5).press("Tab");
 d = await detail();
 assert.equal(d.boxes.alice.parts.left_hand.restore, 0);
 assert.equal(d.boxes.alice.parts.right_hand.restore, null);
+const crops = page.locator(".mcm-parts input.mcm-crop");                                   // whole crop, per part
+assert.equal(await crops.count(), 6);
+await crops.nth(3).check();                                                                 // right hand
+d = await detail();
+assert.equal(d.boxes.alice.parts.right_hand.whole_crop, true);
+assert.equal(d.boxes.alice.parts.left_hand.whole_crop, false);
 await page.locator(".mrl-props button", { hasText: "Add detail LoRA" }).click();
 await page.locator(".mcm-lora input[type=text]").fill("eye_detail.safetensors");
 await page.locator(".mcm-lora input[type=text]").press("Tab");
