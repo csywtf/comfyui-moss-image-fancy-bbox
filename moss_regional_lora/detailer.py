@@ -222,6 +222,16 @@ def gaussian_blur(m: torch.Tensor, sigma: float) -> torch.Tensor:
     return t[0, 0]
 
 
+def keep_out_fade(keep_out: torch.Tensor, feather: float) -> torch.Tensor:
+    """A [H, W] factor for a pass's soft mask: 0 on ``keep_out`` (other characters' pixels), rising to 1
+    over a few pixels away from it, so the redraw fades out before another character instead of stopping
+    at a hard, jagged line, and still never touches them."""
+    k = keep_out.float()
+    sigma = max(1.0, min(3.0, feather / 6))
+    fade = (1 - 2 * gaussian_blur(k, sigma)).clamp(0, 1)      # 0 at the boundary (blur 0.5), 1 well clear
+    return fade * (1 - k)
+
+
 def blend_mask(mask: torch.Tensor, grow: int, feather: float) -> torch.Tensor:
     """Float [H, W] in [0, 1]: the part grown by ``grow`` px, its edge feathered over about ``feather`` px.
     The part itself is always 1, so it is fully replaced."""
@@ -279,8 +289,8 @@ def detail_frame(image: torch.Tensor, passes: Sequence[Pass], sample: Sampler, c
     out = image.detach().cpu().float().clone()
     for k, p in enumerate(passes):
         soft = blend_mask(p.mask, grow, feather)
-        if p.keep_out is not None:
-            soft = soft * ~p.keep_out        # never into another character (it may sit right next to this part)
+        if p.keep_out is not None:           # never into another character (it may sit right next to this part)
+            soft = soft * keep_out_fade(p.keep_out, feather)
         x0, y0, x1, y1 = crop_region(soft > 0, padding, crop_size / max_upscale)
         w, h = x1 - x0, y1 - y0
         s = scale_for((x0, y0, x1, y1), crop_size, max_upscale)
