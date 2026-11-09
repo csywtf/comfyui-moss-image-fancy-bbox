@@ -19,7 +19,7 @@ import * as C from "./curve.js";
 import { CurvePanel, drawSparkline } from "./curve_panel.js";
 import { icon } from "./icons.js";
 import { dropRemovedGridValues } from "./migrate.js";
-import { Viewport, installPanZoom, zoomInFactor, zoomOutFactor } from "./viewport.js";
+import { Viewport, frameRect, installKeySink, installPanZoom, isKeySink, trackSize, zoomInFactor, zoomOutFactor } from "./viewport.js";
 
 const NODE_NAME = "MossRegionalLora";
 const EDITOR_WIDGET = "region_editor";
@@ -234,13 +234,14 @@ class RegionEditor {
     this.loras = [];
     this.status = "";
     this.buildDom();
+    this.wrapSize = trackSize(this.wrap, () => this.draw());
+    this.ro = this.wrapSize.ro;
+    this.canvasRect = frameRect(this.canvas);
     loraList().then((l) => {
       this.loras = l;
     });
     this.syncFromWidget(true);
     this.timer = setInterval(() => this.poll(), POLL_MS);
-    this.ro = new ResizeObserver(() => this.draw());
-    this.ro.observe(this.wrap);
   }
 
   destroy() {
@@ -282,7 +283,7 @@ class RegionEditor {
       this.list,
     ]);
 
-    this.canvas = el("canvas", { tabindex: "0" });
+    this.canvas = el("canvas");
     // the toolbar floats over the left edge of the canvas
     this.wrap = el("div", { class: "mrl-canvas-wrap" }, [this.canvas, tools]);
 
@@ -316,11 +317,14 @@ class RegionEditor {
     c.addEventListener("dblclick", (e) => e.stopPropagation());
     c.addEventListener("contextmenu", (e) => e.stopPropagation());
     this.root.addEventListener("keydown", (e) => this.onKey(e));
+    // keyboard focus ComfyUI leaves alone: its Ctrl+Z undo and wheel forwarding stand aside (see viewport.js)
+    this.keys = installKeySink(this.root);
     installPanZoom({
+      focus: () => this.keys.focus(),
       canvas: c,
       root: this.root,
       viewport: this.viewport,
-      size: () => ({ ...this.canvasSize(), cw: this.wrap.clientWidth, ch: this.wrap.clientHeight }),
+      size: () => ({ ...this.canvasSize(), cw: this.wrapSize.w, ch: this.wrapSize.h }),
       handTool: () => this.tool === "hand",
       redraw: () => this.draw(),
       cursor: (k) => (c.style.cursor = k || this.toolCursor()),
@@ -530,13 +534,13 @@ class RegionEditor {
   /** Layout geometry: image px -> canvas px is (x * scale + ox, y * scale + oy), with zoom and pan. */
   view() {
     const { W, H } = this.canvasSize();
-    return this.viewport.view(W, H, this.wrap.clientWidth, this.wrap.clientHeight);
+    return this.viewport.view(W, H, this.wrapSize.w, this.wrapSize.h);
   }
 
   zoom(factor) {
     const { W, H } = this.canvasSize();
     if (factor === null) this.viewport.reset();
-    else this.viewport.zoomBy(factor, W, H, this.wrap.clientWidth, this.wrap.clientHeight);
+    else this.viewport.zoomBy(factor, W, H, this.wrapSize.w, this.wrapSize.h);
     this.draw();
   }
 
@@ -546,10 +550,10 @@ class RegionEditor {
 
   eventPoint(e) {
     const v = this.view();
-    const r = this.canvas.getBoundingClientRect();
+    const { rect: r, cw, ch } = this.canvasRect();
     // the canvas element may be CSS-scaled by the graph zoom; normalise to its layout size
-    const sx = r.width ? this.canvas.clientWidth / r.width : 1;
-    const sy = r.height ? this.canvas.clientHeight / r.height : 1;
+    const sx = r.width ? cw / r.width : 1;
+    const sy = r.height ? ch / r.height : 1;
     const px = (e.clientX - r.left) * sx - v.ox;
     const py = (e.clientY - r.top) * sy - v.oy;
     return { p: G.screenToImage({ x: px, y: py }, v.scale || 1), v };
@@ -601,7 +605,7 @@ class RegionEditor {
   onDown(e) {
     if (e.button !== 0) return;
     e.stopPropagation();
-    this.canvas.focus();
+    this.keys.focus();
     this.closePicker();
     if (this.parseError) return;
     const { p, v } = this.eventPoint(e);
@@ -729,7 +733,7 @@ class RegionEditor {
   // ------------------------------------------------------------------ keyboard (8.4b, 8.4c)
   onKey(e) {
     const tag = (e.target?.tagName || "").toLowerCase();
-    const inField = tag === "input" || tag === "select" || tag === "textarea";
+    const inField = (tag === "input" || tag === "select" || tag === "textarea") && !isKeySink(e.target);
     const mod = e.ctrlKey || e.metaKey;
     if (mod && (e.key === "z" || e.key === "Z")) {
       if (inField) return;

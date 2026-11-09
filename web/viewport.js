@@ -80,10 +80,11 @@ export function installPanZoom(host) {
   let space = false;
   let drag = null;
 
+  const canvasRect = frameRect(canvas);
   const layout = (e) => {
-    const r = canvas.getBoundingClientRect();
-    const sx = r.width ? canvas.clientWidth / r.width : 1;
-    const sy = r.height ? canvas.clientHeight / r.height : 1;
+    const { rect: r, cw, ch } = canvasRect();
+    const sx = r.width ? cw / r.width : 1;
+    const sy = r.height ? ch / r.height : 1;
     return { x: (e.clientX - r.left) * sx, y: (e.clientY - r.top) * sy };
   };
   const panning = (e) => e.button === 1 || (e.button === 0 && (space || host.handTool()));
@@ -107,7 +108,7 @@ export function installPanZoom(host) {
       if (!panning(e)) return;
       e.preventDefault();
       e.stopImmediatePropagation(); // the editor never sees a pan as a click
-      canvas.focus?.();
+      host.focus?.();
       drag = { ...layout(e), id: e.pointerId };
       canvas.setPointerCapture?.(e.pointerId);
       host.cursor("grabbing");
@@ -146,7 +147,7 @@ export function installPanZoom(host) {
   canvas.addEventListener("pointerup", end, { capture: true });
   canvas.addEventListener("pointercancel", end, { capture: true });
   canvas.addEventListener("auxclick", (e) => e.button === 1 && e.preventDefault()); // no middle-click paste/scroll
-  const typing = (e) => /^(input|textarea|select)$/i.test(e.target?.tagName || "");
+  const typing = (e) => /^(input|textarea|select)$/i.test(e.target?.tagName || "") && !isKeySink(e.target);
   root.addEventListener("keydown", (e) => {
     if (e.key === " " && !typing(e)) {
       e.preventDefault();
@@ -164,4 +165,100 @@ export function installPanZoom(host) {
     }
   });
   return { get panning() { return !!drag; } };
+}
+
+// ---------------------------------------------------------------------------------------------------
+// Keyboard focus that ComfyUI leaves alone.
+//
+// ComfyUI's frontend handles some input before an editor sees it: its change tracker runs the workflow
+// undo for Ctrl+Z / Ctrl+Y from a window capture listener unless a text field (input, textarea,
+// contenteditable) has focus, and its node container forwards the wheel to the graph unless the pointer is
+// over a [data-capture-wheel="true"] element that holds the focus. So each editor keeps a hidden,
+// read-only textarea as its focus target and marks its root data-capture-wheel: with focus there, the
+// editor's own undo and wheel zoom are the only ones that run. It takes the focus when the pointer enters
+// or presses inside the editor (except on the editor's own fields) and gives it back when the pointer
+// leaves, so graph shortcuts work again outside the editor.
+
+const KEY_SINK = "mrl-keysink";
+
+export function isKeySink(el) {
+  return !!el?.classList?.contains(KEY_SINK);
+}
+
+function isTextEntry(el) {
+  return !!el && !isKeySink(el) && (/^(input|textarea|select)$/i.test(el.tagName || "") || el.isContentEditable);
+}
+
+/** Install the focus target in ``root``; returns {el, focus()}. */
+export function installKeySink(root) {
+  root.setAttribute("data-capture-wheel", "true");
+  const sink = document.createElement("textarea");
+  sink.className = KEY_SINK;
+  sink.readOnly = true;
+  sink.tabIndex = -1;
+  sink.setAttribute("aria-hidden", "true");
+  sink.style.cssText = "position:absolute;left:0;top:0;width:1px;height:1px;opacity:0;pointer-events:none;resize:none;border:0;padding:0;overflow:hidden";
+  root.appendChild(sink);
+  const focus = () => {
+    if (document.activeElement !== sink) sink.focus({ preventScroll: true });
+  };
+  // the pointer entering takes the focus, unless someone is typing elsewhere
+  root.addEventListener("pointerenter", () => {
+    const a = document.activeElement;
+    if (!a || a === document.body || root.contains(a) || a.tagName === "CANVAS") {
+      if (!isTextEntry(a)) focus();
+    }
+  });
+  root.addEventListener("pointerleave", () => {
+    if (document.activeElement === sink) sink.blur();
+  });
+  // a press anywhere in the editor except its own fields (buttons, panels, the canvas) keeps the focus here
+  root.addEventListener("pointerdown", (e) => {
+    if (!isTextEntry(e.target)) requestAnimationFrame(focus);
+  });
+  root.addEventListener("focusin", (e) => {
+    if (e.target === root) focus();
+  });
+  return { el: sink, focus };
+}
+
+// ---------------------------------------------------------------------------------------------------
+// Layout reads without forced layouts.
+//
+// Reading an element's size or position makes the browser lay out the page first if anything changed
+// since the last frame. Other ComfyUI extensions change the page all the time (a status bar that animates
+// every second, say), so reading on every pointer move or redraw can mean a full layout each time: the
+// brush stutters. The editors read their canvas size only when it is resized, and its on-screen rect at
+// most once per frame.
+
+/** The element's client size, kept up to date by a ResizeObserver; ``onResize`` runs after each change. */
+export function trackSize(el, onResize) {
+  let size = null;
+  const read = () => (size = { w: el.clientWidth, h: el.clientHeight });
+  const ro = new ResizeObserver(() => {
+    read(); // the layout is fresh here: no extra cost
+    onResize?.();
+  });
+  ro.observe(el);
+  return {
+    ro,
+    get w() {
+      return (size || read()).w;
+    },
+    get h() {
+      return (size || read()).h;
+    },
+  };
+}
+
+/** A function returning {rect, cw, ch} for ``el`` (screen rect and layout size), read once per frame. */
+export function frameRect(el) {
+  let cached = null;
+  return () => {
+    if (!cached) {
+      cached = { rect: el.getBoundingClientRect(), cw: el.clientWidth, ch: el.clientHeight };
+      requestAnimationFrame(() => (cached = null));
+    }
+    return cached;
+  };
 }

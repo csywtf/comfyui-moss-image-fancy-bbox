@@ -101,6 +101,24 @@ const labels = png(200, 100, (g) => {
 });
 const image = png(200, 100, (g) => { const gr = g.createLinearGradient(0, 0, 200, 100); gr.addColorStop(0, "#456"); gr.addColorStop(1, "#cba"); g.fillStyle = gr; g.fillRect(0, 0, 200, 100); });
 window.__views = { "img.png": image, "lab.png": labels };
+// ComfyUI stand-ins (frontend 1.58): its node container forwards the wheel to the graph unless the pointer
+// is over a [data-capture-wheel="true"] element holding the focus; its change tracker runs the workflow undo
+// for Ctrl+Z / Ctrl+Y from a window capture listener unless a text field has the focus.
+window.__graphWheel = 0;
+window.__comfyUndo = 0;
+document.getElementById("host").addEventListener("wheel", (e) => {
+  const t = e.target.closest?.('[data-capture-wheel="true"]');
+  const a = document.activeElement;
+  if (t && a && t.contains(a)) return;
+  e.preventDefault();
+  e.stopPropagation();
+  window.__graphWheel++;
+}, { capture: true, passive: false });
+window.addEventListener("keydown", (e) => {
+  const a = document.activeElement;
+  if (a && (a.tagName === "INPUT" || a.tagName === "TEXTAREA" || a.isContentEditable)) return;
+  if ((e.ctrlKey || e.metaKey) && /^[zy]$/i.test(e.key)) window.__comfyUndo++;
+}, true);
 window.ready = true;
 </script></body></html>`;
 
@@ -131,6 +149,14 @@ const errors = [];
 page.on("pageerror", (e) => errors.push(String(e)));
 await page.goto(`http://127.0.0.1:${server.address().port}/`);
 await page.waitForFunction(() => window.ready === true);
+// as a user would: click away (graph focused), then move the pointer onto the editor's canvas
+async function hoverCanvas() {
+  await page.evaluate(() => document.activeElement?.blur?.());
+  const vs = page.viewportSize();
+  await page.mouse.move(vs.width - 2, vs.height - 2);
+  const b = await page.locator(".mrl-canvas-wrap canvas").boundingBox();
+  await page.mouse.move(b.x + 6, b.y + b.height - 6);
+}
 const detail = async () => JSON.parse(await page.evaluate(() => window.node.widgets.find((w) => w.name === "detail").value));
 const wv = (n) => page.evaluate((n) => window.node.widgets.find((w) => w.name === n).value, n);
 const row = (name) => page.locator(".mcm-row", { hasText: name });
@@ -234,7 +260,7 @@ async function strokeImg(pts, at = imgPx) {
   await page.mouse.up();
 }
 await row("Alice").click();
-await page.locator(".mrl-canvas-wrap canvas").focus();
+await hoverCanvas();
 await page.keyboard.press("b");
 assert.ok(await page.locator(".mcm-opts").isVisible());
 assert.equal(await page.locator(".mcm-opts select").inputValue(), "character");
@@ -335,7 +361,7 @@ await page.mouse.move(mq.x, mq.y);
 await page.mouse.wheel(0, -500);
 await page.waitForTimeout(50);
 assert.ok((await mv()).s > m0.s * 1.2);
-await page.locator(".mrl-canvas-wrap canvas").focus();
+await hoverCanvas();
 await page.keyboard.press("h");
 const before7 = JSON.stringify(await detail());
 const cb = await page.locator(".mrl-canvas-wrap canvas").boundingBox();
@@ -358,6 +384,9 @@ await page.evaluate(() => { window.node.inputs[1].link = null; });
 await page.waitForFunction(() => /Connect the regions output/.test(document.querySelector(".mcm-boxes").textContent));
 console.log("disconnected ok");
 
+const comfy = await page.evaluate(() => ({ wheel: window.__graphWheel, undo: window.__comfyUndo }));
+assert.deepEqual(comfy, { wheel: 0, undo: 0 }, "ComfyUI's own wheel forwarding / undo never ran for editor input");
+console.log("comfyui wheel/undo stand-ins untouched ok");
 assert.deepEqual(errors, []);
 console.log("PASS");
 await browser.close();

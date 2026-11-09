@@ -131,7 +131,10 @@ JSON, to fix it); it never overwrites the text.
   pans. Below them: zoom in, zoom out and fit.
 - **Zoom and pan** (both editors): the mouse wheel over the canvas zooms around the pointer (the
   ComfyUI graph doesn't zoom there); drag with the Hand tool, or hold Space or the middle button with
-  any tool, to pan. Keys: `+` / `-` zoom, `0` fits the image again.
+  any tool, to pan. Keys: `+` / `-` zoom, `0` fits the image again. The editor takes the keyboard
+  focus while the pointer is over it, so the wheel, Ctrl+Z / Ctrl+Y and the tool keys act on the
+  editor rather than on the graph; move the pointer off the editor and they go back to ComfyUI.
+  Ctrl+wheel (and trackpad pinch) still zoom the graph, as ComfyUI always takes those.
 - **Layers**: one row per box, with colour, name, badges (`2L` = two LoRAs, `✎` = in the
   layout prompt, ⚠ = extends past the canvas), then the visibility (eye) and lock toggles and
   move up / down. Click a row to select the box.

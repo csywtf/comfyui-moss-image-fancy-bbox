@@ -57,3 +57,24 @@ test("magic wand: connected fill within tolerance, or every similar pixel in a b
   assert.equal(at(boxed, 3, 0), 0);                                // limited to the box
   assert.ok(P.isEmpty(P.wand(rgba, w, h, -1, 0, 12)));
 });
+
+test("strokeBounds covers every pixel a stroke paints, clipped to the layer", () => {
+  for (const [x0, y0, x1, y1, r] of [[10, 10, 40, 25, 3], [0.2, 47.9, 49.5, 0.1, 6], [-5, -5, 3, 3, 4], [25.5, 25.5, 25.5, 25.5, 0.7]]) {
+    const m = P.blank(50, 50);
+    P.strokeLine(m, x0, y0, x1, y1, r, 1);
+    const b = P.strokeBounds(m, x0, y0, x1, y1, r);
+    assert.ok(b.x0 >= 0 && b.y0 >= 0 && b.x1 <= 50 && b.y1 <= 50);
+    for (let y = 0; y < 50; y++) for (let x = 0; x < 50; x++) {
+      if (m.bits[y * 50 + x]) assert.ok(x >= b.x0 && x < b.x1 && y >= b.y0 && y < b.y1, `${x},${y} outside ${JSON.stringify(b)}`);
+    }
+  }
+});
+
+test("wand flood fill on a large flat image is fast and complete", () => {
+  const w = 1024, h = 1024;
+  const rgba = new Uint8ClampedArray(w * h * 4).fill(200);
+  const t = performance.now();
+  const m = P.wand(rgba, w, h, 5, 5, 10, true);
+  assert.ok(performance.now() - t < 2000);
+  assert.equal(m.bits.reduce((a, b) => a + b, 0), w * h);
+});

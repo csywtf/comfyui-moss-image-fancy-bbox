@@ -71,6 +71,16 @@ export function stamp(layer, cx, cy, r, value = 1) {
   }
 }
 
+/** The pixel rectangle a stroke segment can touch: {x0, y0, x1, y1}, exclusive max, clipped to the layer. */
+export function strokeBounds(layer, x0, y0, x1, y1, r) {
+  return {
+    x0: Math.max(0, Math.floor(Math.min(x0, x1) - r - 1)),
+    y0: Math.max(0, Math.floor(Math.min(y0, y1) - r - 1)),
+    x1: Math.min(layer.w, Math.ceil(Math.max(x0, x1) + r + 1)),
+    y1: Math.min(layer.h, Math.ceil(Math.max(y0, y1) + r + 1)),
+  };
+}
+
 /** A brush stroke segment: circles every half radius from (x0, y0) to (x1, y1). */
 export function strokeLine(layer, x0, y0, x1, y1, r, value = 1) {
   const len = Math.hypot(x1 - x0, y1 - y0);
@@ -101,17 +111,24 @@ export function wand(rgba, w, h, x, y, tolerance, connected = true, within = nul
     for (let yy = by0; yy < by1; yy++) for (let xx = bx0; xx < bx1; xx++) if (near(yy * w + xx)) out.bits[yy * w + xx] = 1;
     return out;
   }
-  const stack = [y * w + x];
+  // flood fill with a preallocated stack (no per-pixel allocation: fast on large images)
+  const stack = new Int32Array(w * h);
+  let top = 0;
+  stack[top++] = y * w + x;
   out.bits[y * w + x] = 1;
-  while (stack.length) {
-    const p = stack.pop();
-    const px = p % w, py = (p - px) / w;
-    for (const q of [px > 0 ? p - 1 : -1, px < w - 1 ? p + 1 : -1, py > 0 ? p - w : -1, py < h - 1 ? p + w : -1]) {
-      if (q >= 0 && !out.bits[q] && near(q)) {
-        out.bits[q] = 1;
-        stack.push(q);
-      }
+  const visit = (q) => {
+    if (!out.bits[q] && near(q)) {
+      out.bits[q] = 1;
+      stack[top++] = q;
     }
+  };
+  while (top) {
+    const p = stack[--top];
+    const px = p % w;
+    if (px > 0) visit(p - 1);
+    if (px < w - 1) visit(p + 1);
+    if (p >= w) visit(p - w);
+    if (p < w * (h - 1)) visit(p + w);
   }
   return out;
 }
