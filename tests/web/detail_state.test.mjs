@@ -11,7 +11,7 @@ test("settings resolve exactly as the node resolves them (shared fixture)", () =
   for (const c of CASES) {
     const doc = c.stored ? { version: 1, boxes: { x: c.stored } } : D.emptyDoc();
     const d = D.detailFor(doc, { id: "x", label: c.label });
-    const norm = { ...d, loras: d.loras.map((e) => [e.lora, e.weight]), points: d.points.map((p) => [p.x, p.y, p.label]) };
+    const norm = { ...d, loras: d.loras.map((e) => [e.lora, e.weight]), paint: Object.keys(d.paint).sort() };
     assert.deepEqual(norm, c.expected, JSON.stringify(c.stored));
   }
   assert.deepEqual(D.PART_NAMES, ["face", "eyes", "left_hand", "right_hand", "hair", "skin"]);
@@ -27,14 +27,14 @@ test("parse: empty is defaults, bad JSON is an error, unknown fields survive an 
   assert.equal(d.enabled, false);
   d.parts.left_hand.on = true;
   d.loras.push({ lora: "eye.safetensors", weight: 0.5 });
-  d.points.push({ x: 0.5, y: 0.25, label: 0 });
+  d.paint.face = { add: { w: 1, h: 1, runs: [0, 1] }, sub: null };
   const next = D.setDetail(res.doc, "a", d);
   const back = JSON.parse(D.serializeDetail(next));
   assert.equal(back.x_top[0], 1);
   assert.equal(back.boxes.a.x_box, 7);
   assert.equal(back.boxes.a.parts.left_hand.on, true);
   assert.deepEqual(back.boxes.a.loras, [{ lora: "eye.safetensors", weight: 0.5 }]);
-  assert.deepEqual(back.boxes.a.points, [{ x: 0.5, y: 0.25, label: 0 }]);
+  assert.deepEqual(back.boxes.a.paint, { face: { add: { w: 1, h: 1, runs: [0, 1] }, sub: null } });
   assert.deepEqual(res.doc.boxes.a, { enabled: false, x_box: 7 });            // input untouched
 });
 
@@ -73,4 +73,20 @@ test("settings saved for 'hands' apply to both hands until one is edited", () =>
   const next = D.detailFor(D.setDetail(doc, "a", d), { id: "a", label: "character" });
   assert.equal(next.parts.right_hand.restore, 0);
   assert.equal(next.parts.left_hand.restore, null);
+});
+
+test("paint and the Protect layer are stored; old points are dropped on the next edit", () => {
+  let doc = { version: 1, boxes: { a: { points: [{ x: 0.5, y: 0.5, label: 1 }] } } };
+  const region = { id: "a", label: "character" };
+  const d = D.detailFor(doc, region);
+  assert.deepEqual(d.paint, {});
+  d.paint.character = { add: { w: 2, h: 1, runs: [1, 1] }, sub: null };
+  doc = D.setDetail(doc, "a", d);
+  assert.ok(!("points" in doc.boxes.a));
+  assert.deepEqual(D.detailFor(doc, region).paint.character.add, { w: 2, h: 1, runs: [1, 1] });
+  assert.equal(D.protectOf(doc), null);
+  doc = D.setProtect(doc, { w: 1, h: 1, runs: [0, 1] });
+  assert.deepEqual(D.protectOf(doc), { w: 1, h: 1, runs: [0, 1] });
+  assert.ok(!("protect" in D.setProtect(doc, null)));
+  assert.deepEqual(D.PAINT_TARGETS, ["character", "face", "eyes", "left_hand", "right_hand", "hair", "skin"]);
 });

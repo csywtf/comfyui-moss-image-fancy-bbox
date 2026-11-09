@@ -12,6 +12,7 @@ import { join, dirname, extname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
 import assert from "node:assert/strict";
+import * as P from "../../web/paint.js";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const require = createRequire(import.meta.url);
@@ -210,7 +211,7 @@ assert.match(await page.locator(".mrl-props").innerText(), /found no character/)
 assert.match(await page.locator(".mrl-props").innerText(), /no caption/);
 console.log("result preview ok");
 
-// 5. points: Shift-click adds a + point for the selected box, Alt-click a - point, clicking a point removes it
+// 5. painting: brushes add to / remove from the target, undo / redo, painting a part ticks it, Protect, wand
 async function imgPx(x, y) {
   return page.evaluate(([x, y]) => {
     const c = document.querySelector(".mrl-canvas-wrap canvas").getBoundingClientRect();
@@ -218,43 +219,65 @@ async function imgPx(x, y) {
     return { x: c.left + (c.width - 200 * s) / 2 + x * s, y: c.top + (c.height - 100 * s) / 2 + y * s };
   }, [x, y]);
 }
+const layer = (stored) => P.decode(stored, 200, 100);
+const bit = (l, x, y) => l.bits[y * 200 + x];
+const count = (l) => l.bits.reduce((a, b) => a + b, 0);
+const tool = (title) => page.locator(`.mrl-tools button[title^="${title}"]`).click();
+async function strokeImg(pts, at = imgPx) {
+  const a = await at(...pts[0]);
+  await page.mouse.move(a.x, a.y);
+  await page.mouse.down();
+  for (const p of pts.slice(1)) {
+    const b = await at(...p);
+    await page.mouse.move(b.x, b.y, { steps: 6 });
+  }
+  await page.mouse.up();
+}
 await row("Alice").click();
-let q = await imgPx(150, 60);                                                              // her arm, across bob
-await page.keyboard.down("Shift");
+await page.locator(".mrl-canvas-wrap canvas").focus();
+await page.keyboard.press("b");
+assert.ok(await page.locator(".mcm-opts").isVisible());
+assert.equal(await page.locator(".mcm-opts select").inputValue(), "character");
+await page.evaluate(() => { window.node.__mcmEditor.brush = 3; });
+await strokeImg([[120, 60], [170, 60]]);                                                   // her arm, across bob
+d = await detail();
+let add = layer(d.boxes.alice.paint.character.add);
+assert.ok(bit(add, 120, 60) && bit(add, 145, 60) && bit(add, 170, 60) && !bit(add, 145, 70));
+await page.keyboard.press("e");
+await strokeImg([[140, 60], [150, 60]]);
+d = await detail();
+add = layer(d.boxes.alice.paint.character.add);
+const sub = layer(d.boxes.alice.paint.character.sub);
+assert.ok(!bit(add, 145, 60) && bit(sub, 145, 60) && bit(add, 125, 60));
+await page.keyboard.press("Control+z");
+assert.equal((await detail()).boxes.alice.paint.character.sub, null);                     // undone
+await page.keyboard.press("Control+Shift+z");
+assert.ok((await detail()).boxes.alice.paint.character.sub);                               // redone
+await page.locator(".mcm-opts select").selectOption("right_hand");
+await tool("Add brush");
+await strokeImg([[30, 80], [40, 80]]);
+d = await detail();
+assert.equal(d.boxes.alice.parts.right_hand.on, true);                                     // painting a part ticks it
+assert.ok(bit(layer(d.boxes.alice.paint.right_hand.add), 35, 80));
+await page.locator(".mcm-opts select").selectOption("protect");
+await strokeImg([[60, 10], [90, 10]]);
+assert.ok(bit(layer((await detail()).protect), 75, 10));                                    // text: never detailed
+await tool("Magic wand");
+await page.locator(".mcm-opts select").selectOption("hair");
+let q = await imgPx(20, 20);
 await page.mouse.click(q.x, q.y);
-await page.keyboard.up("Shift");
-q = await imgPx(100, 80);
+d = await detail();
+const picked = layer(d.boxes.alice.paint.hair.add);
+assert.ok(bit(picked, 20, 20) && count(picked) > 50 && count(picked) < 200 * 100);
+if (process.argv[2]) await page.screenshot({ path: process.argv[2] });
 await page.keyboard.down("Alt");
 await page.mouse.click(q.x, q.y);
 await page.keyboard.up("Alt");
-d = await detail();
-assert.deepEqual(d.boxes.alice.points, [{ x: 0.75, y: 0.6, label: 1 }, { x: 0.5, y: 0.8, label: 0 }]);
-assert.match(await page.locator(".mrl-props").innerText(), /1 \+ point\(s\), 1 − point\(s\)/);
-assert.match(await page.locator(".mrl-props .mrl-panel-head").innerText(), /Alice/);      // still selected
-// drawn in Alice's colour (#e6194b): the + point filled with it, the - point ringed with it
-async function pixel(x, y) {
-  const p = await imgPx(x, y);
-  return page.evaluate(([cx, cy]) => {
-    const c = document.querySelector(".mrl-canvas-wrap canvas");
-    const r = c.getBoundingClientRect();
-    return [...c.getContext("2d").getImageData(Math.round((cx - r.left) * c.width / r.width), Math.round((cy - r.top) * c.height / r.height), 1, 1).data];
-  }, [p.x, p.y]);
-}
-const near = (px, rgb) => rgb.every((v, i) => Math.abs(px[i] - v) <= 40);
-const sOf = await page.evaluate(() => { const c = document.querySelector(".mrl-canvas-wrap canvas").getBoundingClientRect(); return Math.min((c.width - 2) / 200, (c.height - 2) / 100); });
-const off = (px) => px / sOf;                                                              // screen px -> image px
-assert.ok(near(await pixel(150 + off(3.5), 60 + off(3.5)), [0xe6, 0x19, 0x4b]), "+ point fill");
-assert.ok(near(await pixel(100 + off(7), 80), [0xe6, 0x19, 0x4b]), "- point ring");
-if (process.argv[2]) await page.screenshot({ path: process.argv[2] });
-q = await imgPx(100, 80);
-await page.mouse.click(q.x, q.y);                                                          // on the - point: removed
-assert.deepEqual((await detail()).boxes.alice.points, [{ x: 0.75, y: 0.6, label: 1 }]);
-await page.locator(".mrl-props button", { hasText: "Clear" }).click();
-assert.deepEqual((await detail()).boxes.alice.points, []);
-console.log("points ok");
+assert.equal((await detail()).boxes.alice.paint.hair.add, null);                           // Alt-click removed them
+console.log("paint ok");
 
-// 6. under the graph's zoom (ComfyUI CSS-scales DOM widgets): the canvas keeps its layout size, a click
-// lands where it is made, and the cursor is the editor's, not ComfyUI's drag hand
+// 6. under the graph's zoom (ComfyUI CSS-scales DOM widgets): the canvas keeps its layout size, a brush
+// dab lands where it is made, and the cursor is the editor's, not ComfyUI's drag hand
 await page.evaluate(() => {
   const host = document.getElementById("host");
   host.style.transform = "scale(0.6)";
@@ -278,23 +301,26 @@ async function zoomedPx(x, y) {
     return { x: r.left + ((wrap.clientWidth - 200 * s) / 2 + x * s) * z, y: r.top + ((wrap.clientHeight - 100 * s) / 2 + y * s) * z };
   }, [x, y]);
 }
-q = await zoomedPx(150, 60);
-await page.keyboard.down("Shift");
-await page.mouse.click(q.x, q.y);
-await page.keyboard.up("Shift");
-assert.deepEqual((await detail()).boxes.alice.points, [{ x: 0.75, y: 0.6, label: 1 }]);
+await page.locator(".mcm-opts select").selectOption("character");
+await tool("Add brush");
+await strokeImg([[150, 30], [150, 30]], zoomedPx);
+add = layer((await detail()).boxes.alice.paint.character.add);
+assert.ok(bit(add, 150, 30) && !bit(add, 158, 30));
 const cursor = () => page.evaluate(() => document.querySelector(".mrl-canvas-wrap canvas").style.cursor);
-await page.mouse.move(q.x, q.y);
-assert.equal(await cursor(), "pointer");                                                   // over a point: removable
 q = await zoomedPx(40, 70);
 await page.mouse.move(q.x, q.y);
+assert.equal(await cursor(), "none");                                                      // the brush draws its own circle
+await tool("Magic wand");
+await page.mouse.move(q.x + 2, q.y);
 assert.equal(await cursor(), "crosshair");
+await tool("Select");
+await page.mouse.move(q.x, q.y);
+assert.equal(await cursor(), "default");
 await page.evaluate(() => { document.getElementById("host").style.transform = ""; });
 console.log("zoom ok");
 
-// 7. zoom and pan: a Shift-click while zoomed and panned lands on the right image pixel; panning edits nothing
+// 7. zoom and pan: a brush dab while zoomed and panned lands on the right image pixel; panning edits nothing
 if ((await page.evaluate(() => window.node.__mcmEditor.selected)) !== "alice") await row("Alice").click();
-await page.locator(".mrl-props button", { hasText: "Clear" }).click().catch(() => {});
 const mv = () => page.evaluate(() => { const v = window.node.__mcmEditor.view(); return { s: v.s, ox: v.ox, oy: v.oy }; });
 async function mImg(x, y) {
   const v = await mv();
@@ -319,12 +345,10 @@ await page.mouse.move(cb.x + cb.width / 2 - 40, cb.y + cb.height / 2 + 15, { ste
 await page.mouse.up();
 assert.equal(JSON.stringify(await detail()), before7);                                     // panning edits nothing
 assert.match(await page.locator(".mrl-props .mrl-panel-head").innerText(), /Alice/);      // or deselects
-await page.keyboard.press("v");
-mq = await mImg(150, 60);
-await page.keyboard.down("Shift");
-await page.mouse.click(mq.x, mq.y);
-await page.keyboard.up("Shift");
-assert.deepEqual((await detail()).boxes.alice.points.slice(-1), [{ x: 0.75, y: 0.6, label: 1 }]);
+await page.keyboard.press("b");
+await strokeImg([[100, 40], [100, 40]], mImg);
+const dab = layer((await detail()).boxes.alice.paint.character.add);
+assert.ok(bit(dab, 100, 40) && !bit(dab, 108, 40));
 await page.locator('.mrl-tools button[title^="Fit"]').click();
 assert.ok(Math.abs((await mv()).s - m0.s) < 1e-9);
 console.log("masks zoom/pan ok");
