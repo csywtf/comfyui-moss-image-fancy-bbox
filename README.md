@@ -127,7 +127,11 @@ arrives with invalid JSON, the editor turns red and becomes read-only (except th
 JSON, to fix it); it never overwrites the text.
 
 - **Tools** (floating at the top left of the canvas): **Select** (V) clicks, moves and resizes boxes; clicking the background deselects.
-  **Box** (B) draws a new box, then switches back to Select with the new box selected.
+  **Box** (B) draws a new box, then switches back to Select with the new box selected. **Hand** (H)
+  pans. Below them: zoom in, zoom out and fit.
+- **Zoom and pan** (both editors): the mouse wheel over the canvas zooms around the pointer (the
+  ComfyUI graph doesn't zoom there); drag with the Hand tool, or hold Space or the middle button with
+  any tool, to pan. Keys: `+` / `-` zoom, `0` fits the image again.
 - **Layers**: one row per box, with colour, name, badges (`2L` = two LoRAs, `✎` = in the
   layout prompt, ⚠ = extends past the canvas), then the visibility (eye) and lock toggles and
   move up / down. Click a row to select the box.
@@ -229,7 +233,7 @@ and loaded with the normal **Load Checkpoint** node (its MODEL to `sam3_model`, 
    segments the main object inside the box instead; if that finds nothing too, the box itself is used
    (the editor says so). Small holes are filled and stray specks removed.
 2. **Overlaps:** a pixel inside two outlines belongs to the box higher in the layer list (on top),
-   unless you've marked it with a point (below).
+   unless you've painted it as another box's character (below).
 3. **Parts:** SAM3 looks for each ticked part by name (`face`, `eye`, `hand`, `hair`, `skin`) on a crop
    around the character, with every other character greyed out, so it can't pick a neighbour's face in
    a hug. Each part's mask stays inside the box SAM3's detector drew for it (plus a little), so a face
@@ -238,19 +242,27 @@ and loaded with the normal **Load Checkpoint** node (its MODEL to `sam3_model`, 
 
 If the image isn't the canvas size (an upscaled image), the boxes are scaled to it.
 
-**Points (whose arm is it?):** in a hug, an arm lying across the other character often ends up in the
-wrong outline or only partly in either. Select the box, then **Shift-click** the preview on that
-character's arm or hand: a **+** point. SAM3 traces the region at the point and adds it to her outline,
-and it's hers even where another box is on top. **Alt-click** puts a **−** point on something that isn't
-hers; that region is removed from her outline. Points are drawn in their box's colour (+ filled, −
-ringed); with a box selected, the other boxes' points are faint. Click a point to remove it; **Clear**
-removes them all.
-A point needs no type: SAM3 works out the region from where you click (add a second point if it only
-takes the sleeve). Each box's + points also count as − points for every other box. Points are stored as
-fractions of the image, and skin and hands then follow the corrected outlines. Like any detail setting,
-they re-run only this node, not the image.
+**Painting** (tools in the floating toolbar; a strip over the canvas holds the options): pick a
+**Target**, then paint it.
 
-**The editor** (all of the node's inputs are hidden and set here):
+- **Targets:** *Character* (the selected box's whole outline: paint an arm across the other character to
+  make it hers, whatever the layer order), any of its **parts** (face, eyes, left hand, ...), or
+  **Protect** (all boxes: pixels no part of any character may cover, e.g. text that must not be redrawn).
+- **Add brush** (B) paints pixels into the target; **Remove brush** (E) paints them out (for a part: "this
+  is hair, not the hand"). `[` and `]` change the brush size.
+- **Magic wand** (W): click to add similar-coloured pixels, Alt-click to remove them. *Tolerance* sets
+  how different a colour may be; *Connected* (on) takes only pixels joined to the click, off takes every
+  similar pixel inside the selected box. It picks colours from the last run's image.
+- Painting a part that is unticked ticks it. **Undo / redo:** Ctrl+Z, Ctrl+Shift+Z (or Ctrl+Y), for paint
+  and every other detail setting.
+- Paint is applied after SAM3: a part keeps what SAM3 found, plus what you painted in, minus what you
+  painted out, minus Protect. It is stored on this node at the image's resolution (scaled if the image
+  size changes) and, like every detail setting, re-runs only this node, not the image.
+
+(The earlier click points are replaced by painting; points saved in a workflow are ignored.)
+
+**The editor** (all of the node's inputs are hidden and set here; a floating toolbar has Select, Hand
+and the zoom buttons, with the same zoom and pan controls as the main editor):
 
 - **Boxes** (left): read live from the connected main node, with the same names and colours. The
   checkbox turns Detail on or off; after a run, a dot per ticked part shows whether it was found
@@ -318,7 +330,7 @@ Use the same `cfg`, `sampler_name` and `scheduler` as your KSampler.
 
 **Check the masks first:** tick `stop_before_detailing` and queue. Everything up to the masks runs (the
 Character Masks editor shows them) and the detailer stops quietly, so nothing after it runs. Adjust the
-detail settings or points (only the masks re-run), then untick it and queue again: the image and the
+detail settings or paint (only the masks re-run), then untick it and queue again: the image and the
 masks come from ComfyUI's cache and only the detailer runs.
 
 ## Layout discovery (after ComfyUI updates)

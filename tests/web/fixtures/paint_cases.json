@@ -1,0 +1,10 @@
+{
+ "comment": "Shared by tests/test_character_masks.py and tests/web/paint.test.mjs: a stored paint layer and the pixels it holds (row-major).",
+ "cases": [
+  {"stored": {"w": 4, "h": 2, "runs": [0, 2, 3, 1, 2]}, "bits": [1, 1, 0, 0, 0, 1, 0, 0]},
+  {"stored": {"w": 3, "h": 1, "runs": [3]}, "bits": [0, 0, 0]},
+  {"stored": {"w": 3, "h": 2, "runs": [1, 5]}, "bits": [0, 1, 1, 1, 1, 1]},
+  {"stored": {"w": 2, "h": 2, "runs": [1, 1, 1, 1]}, "bits": [0, 1, 0, 1]},
+  {"stored": {"w": 2, "h": 2, "runs": [1, 0, 0, 1, 2]}, "bits": [0, 1, 0, 0], "canonical": [1, 1, 2]}
+ ]
+}

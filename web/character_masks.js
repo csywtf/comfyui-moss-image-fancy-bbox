@@ -12,13 +12,25 @@ import { api } from "../../scripts/api.js";
 import * as G from "./geometry.js";
 import * as S from "./state.js";
 import * as D from "./detail_state.js";
-import { el, hideWidget, injectCss, loraDisplayName, loraList } from "./regional_lora_editor.js";
+import { el, hideWidget, injectCss, loraDisplayName, loraList, zoomButtons, zoomKey } from "./regional_lora_editor.js";
+import { Viewport, installPanZoom } from "./viewport.js";
+import * as P from "./paint.js";
+
+// Tools in the floating toolbar: {id, icon (a name in icons.js), key, title}.
+const TOOLS = [
+  { id: "select", icon: "mouse-pointer-2", key: "v", title: "Select (V): click a character to select its box." },
+  { id: "hand", icon: "hand", key: "h", title: "Hand (H): drag to pan. Any tool: hold Space or drag with the middle button to pan; the wheel zooms." },
+  { id: "add", icon: "paintbrush", key: "b", title: "Add brush (B): paint pixels into the target (the selected box's character or part, or Protect). [ and ] change the size." },
+  { id: "sub", icon: "eraser", key: "e", title: "Remove brush (E): paint pixels out of the target. [ and ] change the size." },
+  { id: "wand", icon: "wand-sparkles", key: "w", title: "Magic wand (W): click to add similar-coloured pixels to the target, Alt-click to remove them. Tolerance and 'connected' in the tool options." },
+];
+const PAINT_TOOLS = ["add", "sub", "wand"];
+const ADD_RGB = "#ffffff";
 
 const NODE_NAME = "MossCharacterMasks";
 const EDITOR_WIDGET = "masks_editor";
 const UI_KEY = "moss_character_masks";
 const POLL_MS = 250;
-const POINT_HIT_PX = 9; // clicking within this many screen px of a point removes it
 const SETTINGS = [
   ["threshold", "Threshold", 0.01, "How confident SAM3 must be to accept a part. Lower finds more."],
   ["box_margin", "Box margin", 0.01, "How far outside each box (as a fraction of its size) to look for its parts."],
@@ -46,6 +58,11 @@ const CSS = `
 .mcm-lora input[type=text]{flex:1;min-width:0}
 .mcm-lora input[type=number]{width:54px}
 .mcm-empty{padding:8px;opacity:.7}
+.mcm-opts{position:absolute;left:52px;top:8px;right:8px;z-index:2;display:none;flex-wrap:wrap;align-items:center;gap:6px;padding:4px 6px;background:rgba(30,30,30,.92);border:1px solid var(--border-color,#555);border-radius:6px;box-shadow:0 2px 10px rgba(0,0,0,.45)}
+.mcm-opts.on{display:flex}
+.mcm-opts label{display:inline-flex;align-items:center;gap:4px}
+.mcm-opts input[type=range]{width:90px}
+.mcm-opts .mcm-warn{color:#fb4}
 `;
 
 function injectMasksCss() {
@@ -82,6 +99,17 @@ class MasksEditor {
   constructor(node) {
     this.node = node;
     this.selected = null;
+    this.tool = "select";
+    this.viewport = new Viewport();
+    this.history = new S.History(100); // undo / redo of the detail settings (paint strokes included)
+    this.paintTarget = "character"; // "character", a part name, or "protect"
+    this.brush = 20; // brush radius, image px
+    this.tolerance = 32; // magic wand, 0-255 per channel
+    this.connected = true;
+    this.pixels = null; // ImageData of the last run's image, for the wand
+    this.layers = null; // {key, add, sub} bitmaps of the target being painted
+    this.stroke = null;
+    this.hover = null;
     this.result = null; // the last run's payload
     this.image = null; // HTMLImageElement of the last run's image
     this.labels = null; // ImageData of its label map
@@ -122,8 +150,15 @@ class MasksEditor {
   build() {
     this.list = el("div", { class: "mrl-panel-body" });
     const boxes = el("div", { class: "mrl-panel mcm-boxes" }, [el("div", { class: "mrl-panel-head", text: "Boxes" }), this.list]);
-    this.canvas = el("canvas");
-    this.wrap = el("div", { class: "mrl-canvas-wrap" }, [this.canvas]);
+    this.canvas = el("canvas", { tabindex: "0" }); // focusable, so tool and zoom keys work after a click
+    this.toolButtons = {};
+    const tools = el("div", { class: "mrl-tools" }, [
+      ...TOOLS.map((t) => (this.toolButtons[t.id] = el("button", { icon: t.icon, iconSize: 16, title: t.title, onclick: () => this.setTool(t.id) }))),
+      el("div", { class: "mrl-tool-sep" }),
+      ...zoomButtons(this),
+    ]);
+    this.opts = el("div", { class: "mcm-opts" });
+    this.wrap = el("div", { class: "mrl-canvas-wrap" }, [this.canvas, tools, this.opts]);
     this.propsTitle = el("span", { class: "grow" });
     this.props = el("div", { class: "mrl-panel-body" });
     const props = el("div", { class: "mrl-panel mrl-props" }, [el("div", { class: "mrl-panel-head" }, [this.propsTitle]), this.props]);
@@ -133,8 +168,213 @@ class MasksEditor {
     this.canvas.style.cursor = "default"; // not ComfyUI's drag hand
     this.canvas.addEventListener("pointerdown", (e) => this.onCanvasDown(e));
     this.canvas.addEventListener("pointermove", (e) => this.onCanvasMove(e));
+    this.canvas.addEventListener("pointerup", (e) => this.onCanvasUp(e));
+    this.canvas.addEventListener("pointercancel", (e) => this.onCanvasUp(e));
+    this.canvas.addEventListener("pointerleave", () => {
+      this.hover = null;
+      this.draw();
+    });
     this.root.addEventListener("pointerdown", (e) => e.stopPropagation());
-    this.root.addEventListener("keydown", (e) => e.stopPropagation()); // typing here isn't a graph shortcut
+    this.root.addEventListener("keydown", (e) => {
+      e.stopPropagation(); // typing here isn't a graph shortcut
+      if (/^(input|textarea|select)$/i.test(e.target?.tagName || "")) return;
+      if ((e.ctrlKey || e.metaKey) && /^[zZyY]$/.test(e.key)) {
+        e.preventDefault();
+        return e.key.toLowerCase() === "y" || e.shiftKey ? this.redo() : this.undo();
+      }
+      if (e.ctrlKey || e.metaKey || e.altKey) return;
+      if (zoomKey(this, e)) return;
+      if (e.key === "[" || e.key === "]") {
+        this.brush = Math.max(1, Math.min(300, Math.round(this.brush * (e.key === "]" ? 1.25 : 0.8))));
+        this.renderOptions();
+        return this.draw();
+      }
+      const tool = TOOLS.find((t) => t.key === e.key.toLowerCase());
+      if (tool) this.setTool(tool.id);
+    });
+    installPanZoom({
+      canvas: this.canvas,
+      root: this.root,
+      viewport: this.viewport,
+      size: () => {
+        const v = this.view();
+        return { W: v.W, H: v.H, cw: v.cw, ch: v.ch };
+      },
+      handTool: () => this.tool === "hand",
+      redraw: () => this.draw(),
+      cursor: (k) => (this.canvas.style.cursor = k || "default"),
+    });
+    this.renderTools();
+  }
+
+  setTool(id) {
+    this.tool = id;
+    this.renderTools();
+    this.renderOptions();
+    this.canvas.style.cursor = this.toolCursor();
+    this.draw();
+  }
+
+  toolCursor() {
+    return { hand: "grab", add: "none", sub: "none", wand: "crosshair" }[this.tool] || "default";
+  }
+
+  /** The tool options strip over the canvas: what to paint, brush size, wand tolerance. */
+  renderOptions() {
+    const paint = PAINT_TOOLS.includes(this.tool);
+    this.opts.classList.toggle("on", paint);
+    if (!paint) return this.opts.replaceChildren();
+    const target = el("select", { title: "What the brushes and the wand paint" });
+    const targets = [["character", "Character (whole outline)"], ...D.PARTS.map((p) => [p.name, p.label]), ["protect", "Protect (all boxes: never detailed)"]];
+    for (const [v, t] of targets) target.appendChild(el("option", { value: v, text: t }));
+    target.value = this.paintTarget;
+    target.addEventListener("change", () => {
+      this.paintTarget = target.value;
+      this.layers = null;
+      this.paintCanvas = null;
+      this.renderOptions();
+      this.draw();
+    });
+    const items = [el("label", {}, [el("span", { text: "Target" }), target])];
+    if (this.tool === "wand") {
+      const tol = el("input", { type: "range", min: "0", max: "100", step: "1", value: String(Math.round(this.tolerance / 2.55)), title: "How different a colour may be and still be picked" });
+      const tolText = el("span", { text: String(Math.round(this.tolerance / 2.55)) });
+      tol.addEventListener("input", () => {
+        this.tolerance = Math.round(Number(tol.value) * 2.55);
+        tolText.textContent = tol.value;
+      });
+      const con = el("input", { type: "checkbox", title: "Only pixels joined to the clicked one; off: every similar pixel in the selected box" });
+      con.checked = this.connected;
+      con.addEventListener("change", () => (this.connected = con.checked));
+      items.push(el("label", {}, [el("span", { text: "Tolerance" }), tol, tolText]), el("label", {}, [con, el("span", { text: "Connected" })]), el("span", { class: "mrl-hint", text: "Alt-click removes" }));
+      if (!this.pixels) items.push(el("span", { class: "mcm-warn", text: "Run the workflow first: the wand picks colours from the image." }));
+    } else {
+      const size = el("input", { type: "range", min: "1", max: "300", step: "1", value: String(this.brush), title: "Brush radius (image pixels). [ and ] change it." });
+      const sizeText = el("span", { text: String(this.brush) });
+      size.addEventListener("input", () => {
+        this.brush = Number(size.value);
+        sizeText.textContent = size.value;
+      });
+      items.push(el("label", {}, [el("span", { text: "Size" }), size, sizeText]));
+    }
+    if (this.paintTarget !== "protect" && !this.selected) items.push(el("span", { class: "mcm-warn", text: "Select a box to paint its character or parts." }));
+    this.opts.replaceChildren(...items);
+  }
+
+  // ------------------------------------------------------------------ painting
+  paintKey() {
+    return this.paintTarget === "protect" ? "protect" : this.selected ? `${this.selected}:${this.paintTarget}` : null;
+  }
+
+  /** The bitmaps being painted ({add, sub}; Protect has only add), decoded from the settings. */
+  paintLayers() {
+    const key = this.paintKey();
+    const d = this.doc();
+    if (!key || !d.ok) return null;
+    const { W, H } = this.view();
+    if (this.layers?.key === key && this.layers.add.w === W && this.layers.add.h === H) return this.layers;
+    if (key === "protect") {
+      this.layers = { key, add: P.decode(D.protectOf(d.doc), W, H), sub: null };
+    } else {
+      const region = this.boxes().find(({ region }) => region.id === this.selected)?.region;
+      const t = region ? D.detailFor(d.doc, region).paint[this.paintTarget] : null;
+      this.layers = { key, add: P.decode(t?.add, W, H), sub: P.decode(t?.sub, W, H) };
+    }
+    return this.layers;
+  }
+
+  /** Paint ``mask`` (a bitmap) into the target (``add``) or out of it. */
+  applyPaint(L, mask, add) {
+    if (L.sub) {
+      P.apply(add ? L.add : L.sub, mask, 1);
+      P.apply(add ? L.sub : L.add, mask, 0);
+    } else P.apply(L.add, mask, add ? 1 : 0);
+  }
+
+  stampPaint(L, x0, y0, x1, y1, add) {
+    const m = P.blank(L.add.w, L.add.h);
+    P.strokeLine(m, x0, y0, x1, y1, this.brush, 1);
+    this.applyPaint(L, m, add);
+    this.paintCanvas = null;
+  }
+
+  /** Store the painted layers in the settings (one undo step). */
+  commitPaint() {
+    const L = this.layers;
+    const d = this.doc();
+    if (!L || !d.ok) return;
+    const enc = (b) => (b && !P.isEmpty(b) ? P.encode(b) : null);
+    if (L.key === "protect") return this.commitDoc(D.setProtect(d.doc, enc(L.add)));
+    const region = this.boxes().find(({ region }) => region.id === this.selected)?.region;
+    if (!region) return;
+    const next = structuredClone(D.detailFor(d.doc, region));
+    next.paint[this.paintTarget] = { add: enc(L.add), sub: enc(L.sub) };
+    if (L.add && !P.isEmpty(L.add) && next.parts[this.paintTarget]) next.parts[this.paintTarget].on = true; // painting a part ticks it
+    this.commitDoc(D.setDetail(d.doc, region.id, next));
+  }
+
+  commitDoc(next) {
+    this.history.record(this.widget("detail")?.value ?? "");
+    this.setWidget("detail", D.serializeDetail(next));
+    this.layers = null;
+    this.paintCanvas = null;
+    this.poll();
+  }
+
+  undo() {
+    const prev = this.history.undo(this.widget("detail")?.value ?? "");
+    if (prev !== null) this.restore(prev);
+  }
+
+  redo() {
+    const next = this.history.redo(this.widget("detail")?.value ?? "");
+    if (next !== null) this.restore(next);
+  }
+
+  restore(text) {
+    this.setWidget("detail", text);
+    this.layers = null;
+    this.paintCanvas = null;
+    this.sig = "";
+    this.poll();
+  }
+
+  /** The target's paint as a canvas: added pixels white, removed ones red stripes, Protect grey stripes. */
+  buildPaintCanvas() {
+    const L = this.paintLayers();
+    if (!L) return null;
+    const { w, h } = L.add;
+    const d = this.doc();
+    const prot = L.key === "protect" || !d.ok ? null : P.decode(D.protectOf(d.doc), w, h);
+    const px = new Uint8ClampedArray(w * h * 4);
+    const isProtect = L.key === "protect";
+    for (let y = 0, i = 0; y < h; y++) {
+      for (let x = 0; x < w; x++, i++) {
+        const o = i * 4;
+        const stripe = (x + y) % 8 < 3;
+        if (L.add.bits[i]) {
+          if (isProtect) px.set([150, 150, 150, stripe ? 230 : 110], o);
+          else px.set([255, 255, 255, 120], o);
+        } else if (L.sub?.bits[i]) px.set([255, 59, 48, stripe ? 220 : 90], o);
+        else if (prot?.bits[i] && stripe) px.set([150, 150, 150, 120], o);
+      }
+    }
+    const c = document.createElement("canvas");
+    c.width = w;
+    c.height = h;
+    c.getContext("2d").putImageData(new ImageData(px, w, h), 0, 0);
+    return c;
+  }
+
+  renderTools() {
+    for (const t of TOOLS) this.toolButtons[t.id].classList.toggle("on", this.tool === t.id);
+  }
+
+  zoom(factor) {
+    const v = this.view();
+    if (factor === null) this.viewport.reset();
+    else this.viewport.zoomBy(factor, v.W, v.H, v.cw, v.ch);
+    this.draw();
   }
 
   // ------------------------------------------------------------------ data
@@ -167,8 +407,7 @@ class MasksEditor {
     if (!d.ok) return;
     const next = structuredClone(D.detailFor(d.doc, region));
     change(next);
-    this.setWidget("detail", D.serializeDetail(D.setDetail(d.doc, region.id, next)));
-    this.poll();
+    this.commitDoc(D.setDetail(d.doc, region.id, next));
   }
 
   resultBox(id) {
@@ -210,9 +449,18 @@ class MasksEditor {
       g.drawImage(lab, 0, 0);
       this.image = img;
       this.labels = g.getImageData(0, 0, c.width, c.height);
+      const ci = document.createElement("canvas");
+      ci.width = img.naturalWidth;
+      ci.height = img.naturalHeight;
+      const gi = ci.getContext("2d", { willReadFrequently: true });
+      gi.drawImage(img, 0, 0);
+      this.pixels = gi.getImageData(0, 0, ci.width, ci.height);
     } catch {
-      this.image = this.labels = null;
+      this.image = this.labels = this.pixels = null;
     }
+    this.layers = null;
+    this.paintCanvas = null;
+    this.renderOptions();
     this.sig = "";
     this.poll();
   }
@@ -265,6 +513,9 @@ class MasksEditor {
   select(id) {
     this.selected = this.selected === id ? null : id;
     this.overlay = null;
+    this.layers = null;
+    this.paintCanvas = null;
+    this.renderOptions();
     this.renderList();
     this.renderProps();
     this.draw();
@@ -285,7 +536,7 @@ class MasksEditor {
     const { region } = entry;
     this.propsTitle.textContent = `Detail: ${region.name || region.id}`;
     const ro = !this.doc().ok;
-    this.props.replaceChildren(this.boxSection(region), this.pointsSection(region), this.lorasSection(region), this.partsSection(region));
+    this.props.replaceChildren(this.boxSection(region), this.lorasSection(region), this.partsSection(region));
     if (ro) for (const x of this.props.querySelectorAll("input,button,textarea")) x.disabled = true;
   }
 
@@ -328,19 +579,6 @@ class MasksEditor {
       el("div", { class: "mrl-hint", text: region.caption ? `Caption: ${region.caption}` : "This box has no caption; its parts are prompted with the detail prompt and part prompts only." }),
       this.field("Prompt", prompt),
       rb && rb.outline_found === false ? el("div", { class: "mrl-hint", style: "color:#f99", text: "SAM3 found no character in this box; the whole box was used as its outline." }) : null,
-    ]);
-  }
-
-  pointsSection(region) {
-    const pts = this.detailOf(region).points;
-    const plus = pts.filter((p) => p.label).length;
-    return el("div", { class: "mrl-sec" }, [
-      el("div", { class: "mrl-sec-title" }, [
-        el("span", { class: "grow", text: "Points" }),
-        pts.length ? el("button", { icon: "trash-2", text: "Clear", class: "mrl-mini", title: "Remove this box's points", onclick: () => this.updateDetail(region, (d) => (d.points = [])) }) : null,
-      ]),
-      el("div", { class: "mrl-hint", text: "Shift-click the preview on this character's arm or hand (+) to make it hers; Alt-click (−) on something that isn't. Click a point to remove it. Masks update on the next run." }),
-      pts.length ? el("div", { class: "mrl-hint", text: `${plus} + point(s), ${pts.length - plus} − point(s)` }) : null,
     ]);
   }
 
@@ -408,45 +646,11 @@ class MasksEditor {
     ]);
   }
 
-  /** Every box's points in its colour: + filled with it, − ringed with it. With a box selected, its points
-   * are full strength and the others faint. */
-  drawPoints(g, v) {
-    for (const { region, color } of this.boxes()) {
-      const dim = this.selected && region.id !== this.selected;
-      g.globalAlpha = dim ? 0.4 : 1;
-      for (const p of this.detailOf(region).points) {
-        const cx = v.ox + p.x * v.W * v.s;
-        const cy = v.oy + p.y * v.H * v.s;
-        g.beginPath();
-        g.arc(cx, cy, 7, 0, Math.PI * 2);
-        g.fillStyle = p.label ? color : "#1b1b1b";
-        g.fill();
-        g.lineWidth = 2;
-        g.strokeStyle = p.label ? "#fff" : color;
-        g.stroke();
-        g.beginPath();
-        g.moveTo(cx - 3.5, cy);
-        g.lineTo(cx + 3.5, cy);
-        if (p.label) {
-          g.moveTo(cx, cy - 3.5);
-          g.lineTo(cx, cy + 3.5);
-        }
-        g.strokeStyle = p.label ? "#fff" : color;
-        g.stroke();
-      }
-    }
-    g.globalAlpha = 1;
-  }
-
-  // ------------------------------------------------------------------ preview
-  /** Layout geometry (CSS px before the graph's zoom), as the main editor does. */
   view() {
-    const cw = this.wrap.clientWidth;
-    const ch = this.wrap.clientHeight;
     const W = this.result?.width || this.src?.W || 1024;
     const H = this.result?.height || this.src?.H || 1024;
-    const s = Math.max(1e-6, Math.min((cw - 2) / W, (ch - 2) / H));
-    return { cw, ch, W, H, s, ox: (cw - W * s) / 2, oy: (ch - H * s) / 2 };
+    const v = this.viewport.view(W, H, this.wrap.clientWidth, this.wrap.clientHeight);
+    return { ...v, s: v.scale };
   }
 
   /** A pointer event in image pixels. The graph's zoom CSS-scales this editor, so the on-screen offset is
@@ -459,19 +663,56 @@ class MasksEditor {
     return { x: ((e.clientX - r.left) * sx - v.ox) / v.s, y: ((e.clientY - r.top) * sy - v.oy) / v.s, v };
   }
 
-  /** Index of the selected box's point under (x, y) image px, or -1. */
-  pointAt(region, x, y, v) {
-    return this.detailOf(region).points.findIndex((p) => Math.hypot((p.x * v.W - x) * v.s, (p.y * v.H - y) * v.s) <= POINT_HIT_PX);
+  onCanvasMove(e) {
+    const { x, y } = this.eventPoint(e);
+    if (this.canvas.style.cursor !== this.toolCursor()) this.canvas.style.cursor = this.toolCursor();
+    if (this.tool === "add" || this.tool === "sub") {
+      this.hover = { x, y };
+      if (this.stroke) {
+        this.stampPaint(this.stroke.L, this.stroke.x, this.stroke.y, x, y, this.tool === "add");
+        this.stroke.x = x;
+        this.stroke.y = y;
+      }
+      this.draw();
+    }
   }
 
-  onCanvasMove(e) {
-    const region = this.boxes().find(({ region }) => region.id === this.selected)?.region;
-    let cursor = "default";
-    if (region) {
-      const { x, y, v } = this.eventPoint(e);
-      cursor = this.pointAt(region, x, y, v) >= 0 ? "pointer" : "crosshair";
+  onCanvasUp(e) {
+    if (!this.stroke) return;
+    try {
+      this.canvas.releasePointerCapture(e.pointerId);
+    } catch {}
+    this.stroke = null;
+    this.commitPaint();
+  }
+
+  /** Brush strokes and wand clicks; false if the click wasn't a paint action. */
+  paintDown(e, x, y) {
+    if (!PAINT_TOOLS.includes(this.tool) || e.button !== 0) return false;
+    const L = this.paintLayers();
+    if (!L) return false; // no box selected yet: the click selects one (the options strip says so)
+    if (this.tool === "wand") {
+      if (!this.pixels) return true;
+      const { W, H } = this.view();
+      const sx = this.pixels.width / W, sy = this.pixels.height / H;
+      let within = null;
+      const region = this.boxes().find(({ region }) => region.id === this.selected)?.region;
+      if (region && this.src) {
+        const r = G.centeredToCanvas(region.bbox, this.src.W, this.src.H);
+        const k = W / this.src.W;
+        within = { x0: r.x0 * k * sx, y0: r.y0 * k * sy, x1: r.x1 * k * sx, y1: r.y1 * k * sy };
+      }
+      let m = P.wand(this.pixels.data, this.pixels.width, this.pixels.height, x * sx, y * sy, this.tolerance, this.connected, within);
+      if (this.pixels.width !== W || this.pixels.height !== H) m = P.decode(P.encode(m), W, H);
+      this.applyPaint(L, m, !e.altKey);
+      this.commitPaint();
+      return true;
     }
-    if (this.canvas.style.cursor !== cursor) this.canvas.style.cursor = cursor;
+    this.stroke = { L, x, y };
+    this.stampPaint(L, x, y, x, y, this.tool === "add");
+    this.canvas.setPointerCapture?.(e.pointerId);
+    this.draw();
+    return true;
   }
 
   buildOverlay() {
@@ -527,25 +768,28 @@ class MasksEditor {
         g.globalAlpha = 1;
         g.setLineDash([]);
       }
-      this.drawPoints(g, v);
+    }
+    if (PAINT_TOOLS.includes(this.tool) || this.paintTarget === "protect") {
+      this.paintCanvas = this.paintCanvas || this.buildPaintCanvas();
+      if (this.paintCanvas) {
+        g.imageSmoothingEnabled = false;
+        g.drawImage(this.paintCanvas, v.ox, v.oy, v.W * v.s, v.H * v.s);
+        g.imageSmoothingEnabled = true;
+      }
+    }
+    if (this.hover && (this.tool === "add" || this.tool === "sub")) {
+      g.beginPath();
+      g.arc(v.ox + this.hover.x * v.s, v.oy + this.hover.y * v.s, Math.max(1, this.brush * v.s), 0, Math.PI * 2);
+      g.lineWidth = 1.5;
+      g.strokeStyle = this.tool === "add" ? ADD_RGB : "#ff3b30";
+      g.stroke();
     }
   }
 
   onCanvasDown(e) {
+    this.canvas.focus();
     const { x, y, v } = this.eventPoint(e);
-    const region = this.boxes().find(({ region }) => region.id === this.selected)?.region;
-    if (region && this.doc().ok) {
-      // click on one of the selected box's points: remove it
-      const near = this.pointAt(region, x, y, v);
-      if (near >= 0) return this.updateDetail(region, (d) => d.points.splice(near, 1));
-      // Shift-click: + (this is hers), Alt-click: - (this isn't)
-      if ((e.shiftKey || e.altKey) && x >= 0 && y >= 0 && x <= v.W && y <= v.H) {
-        e.preventDefault();
-        const label = e.altKey ? 0 : 1;
-        const r3 = (n) => Math.round(n * 1000) / 1000;
-        return this.updateDetail(region, (d) => d.points.push({ x: r3(x / v.W), y: r3(y / v.H), label }));
-      }
-    }
+    if (this.paintDown(e, x, y)) return e.preventDefault();
     let hit = null;
     if (this.labels && x >= 0 && y >= 0 && x < this.labels.width && y < this.labels.height) {
       const i = (Math.floor(y) * this.labels.width + Math.floor(x)) * 4;

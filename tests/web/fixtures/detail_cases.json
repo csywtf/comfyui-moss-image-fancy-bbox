@@ -47,7 +47,7 @@
       "restore": null
      }
     },
-    "points": []
+    "paint": []
    }
   },
   {
@@ -96,7 +96,7 @@
       "restore": null
      }
     },
-    "points": []
+    "paint": []
    }
   },
   {
@@ -136,22 +136,38 @@
      }
     },
     "x_unknown": 1,
-    "points": [
-     {
-      "x": 0.5,
-      "y": 0.25,
-      "label": 1
+    "paint": {
+     "character": {
+      "add": {
+       "w": 2,
+       "h": 1,
+       "runs": [
+        1,
+        1
+       ]
+      }
      },
-     {
-      "x": 0.1,
-      "y": 0.2,
-      "label": 0
+     "eyes": {
+      "sub": {
+       "w": 2,
+       "h": 1,
+       "runs": [
+        0,
+        2
+       ]
+      }
      },
-     {
-      "x": 1.5,
-      "y": 0.2
+     "tail": {
+      "add": {
+       "w": 1,
+       "h": 1,
+       "runs": [
+        0,
+        1
+       ]
+      }
      }
-    ]
+    }
    },
    "expected": {
     "enabled": true,
@@ -201,17 +217,9 @@
       "restore": null
      }
     },
-    "points": [
-     [
-      0.5,
-      0.25,
-      1
-     ],
-     [
-      0.1,
-      0.2,
-      0
-     ]
+    "paint": [
+     "character",
+     "eyes"
     ]
    }
   }

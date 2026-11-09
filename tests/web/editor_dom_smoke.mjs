@@ -350,6 +350,61 @@ assert.ok(sent.regions.length > 0);
 for (const r of sent.regions) for (const k of ["name", "color", "locked", "group", "visible"]) assert.ok(!(k in r), k);
 assert.ok(!("editor" in sent) && !("groups" in sent));
 console.log("backend regions ok");
+
+// zoom and pan: the wheel zooms around the pointer; Hand tool, Space-drag and middle-drag pan without
+// editing; the toolbar's fit button resets
+const edView = () => page.evaluate(() => { const v = window.node.__mrlEditor.view(); return { scale: v.scale, ox: v.ox, oy: v.oy }; });
+async function imgToScreen(x, y) {
+  const v = await edView();
+  return page.evaluate(([x, y, v]) => {
+    const r = document.querySelector(".mrl-canvas-wrap canvas").getBoundingClientRect();
+    return { x: r.left + v.ox + x * v.scale, y: r.top + v.oy + y * v.scale };
+  }, [x, y, v]);
+}
+const v0 = await edView();
+let q0 = await imgToScreen(700, 300);
+await page.mouse.move(q0.x, q0.y);
+await page.mouse.wheel(0, -400);
+await page.waitForTimeout(50);
+const v1 = await edView();
+assert.ok(v1.scale > v0.scale * 1.2, `zoomed: ${v0.scale} -> ${v1.scale}`);
+const q1 = await imgToScreen(700, 300);
+assert.ok(Math.abs(q1.x - q0.x) < 1 && Math.abs(q1.y - q0.y) < 1, "the point under the pointer stays put");
+const rawBeforePan = await page.locator("#raw").inputValue();
+async function dragBy(dx, dy, opts = {}) {
+  const r = await page.locator(".mrl-canvas-wrap canvas").boundingBox();
+  const x = r.x + r.width / 2, y = r.y + r.height / 2;
+  await page.mouse.move(x, y);
+  await page.mouse.down(opts);
+  await page.mouse.move(x + dx, y + dy, { steps: 4 });
+  await page.mouse.up(opts);
+}
+await page.locator(".mrl-canvas-wrap canvas").focus();
+await page.keyboard.press("h");
+let a0 = await edView();
+await dragBy(60, 25);
+let a1 = await edView();
+assert.ok(Math.abs(a1.ox - a0.ox - 60) < 1 && Math.abs(a1.oy - a0.oy - 25) < 1, "hand tool pans");
+await page.keyboard.press("v");
+a0 = await edView();
+await page.keyboard.down(" ");
+await dragBy(-30, 10);
+await page.keyboard.up(" ");
+a1 = await edView();
+assert.ok(Math.abs(a1.ox - a0.ox + 30) < 1, "space-drag pans");
+a0 = a1;
+await dragBy(20, 0, { button: "middle" });
+a1 = await edView();
+assert.ok(Math.abs(a1.ox - a0.ox - 20) < 1, "middle-drag pans");
+assert.equal(await page.locator("#raw").inputValue(), rawBeforePan);                     // nothing was edited
+await page.locator('.mrl-tools button[title^="Fit"]').click();
+const vf = await edView();
+assert.ok(Math.abs(vf.scale - v0.scale) < 1e-9 && Math.abs(vf.ox - v0.ox) < 1e-9);
+await page.locator('.mrl-tools button[title^="Zoom in"]').click();
+assert.ok((await edView()).scale > v0.scale);
+await page.keyboard.press("0");
+assert.ok(Math.abs((await edView()).scale - v0.scale) < 1e-9);
+console.log("zoom/pan ok");
 if (process.argv[2]) await page.screenshot({ path: process.argv[2] });
 assert.deepEqual(errors, []);
 console.log("PASS");

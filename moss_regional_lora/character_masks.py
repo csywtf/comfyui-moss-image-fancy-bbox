@@ -6,9 +6,9 @@ For every visible box with Detail on:
    matches the box is the character's silhouette; if none matches, SAM3 segments the main object inside
    the box (a box prompt); if that finds nothing too, the box itself stands in. Small holes are filled
    and stray specks removed.
-2. **Points and ownership**: the user's + points on a box (an arm across the other character) add the
-   region SAM3 traces from them to that box's outline, and win over the layer order; its - points remove
-   the region they mark. Otherwise every pixel inside some outline belongs to the topmost box (last in
+2. **Paint and ownership**: pixels the user painted + on a box's Character layer (an arm across the
+   other character) are added to its outline and are its own, whatever the layer order; pixels painted
+   - are removed from it. Otherwise every pixel inside some outline belongs to the topmost box (last in
    the layer list) whose outline covers it.
 3. **Parts**: on a crop around the box and outline, with every other character's pixels greyed out (so
    SAM3 can only find this character's face, not a neighbour's), SAM3 finds each ticked part by text
@@ -16,6 +16,8 @@ For every visible box with Detail on:
    instead of running down the neck), and the results are pasted back. A box's parts keep only pixels it owns, plus
    unowned pixels just outside its outline (hair strands, edges); a pixel two boxes could both claim
    goes to the one on top.
+4. **Painted parts**: each part's + paint is added and its - paint removed; the Protect layer (text,
+   anything that must not be redrawn) is removed from every part of every box.
 
 The detail settings (which parts, prompts, denoise, detail LoRAs) live on this node, not in the main
 node's regions, so changing them never invalidates the generated image in ComfyUI's cache.
@@ -96,8 +98,8 @@ class BoxDetail:
     use_box_loras: bool = True
     loras: Tuple[Tuple[str, float], ...] = ()
     parts: Dict[str, PartSettings] = field(default_factory=dict)
-    # (x, y, positive) with x, y as fractions of the image: + "this is this character's", - "this isn't"
-    points: Tuple[Tuple[float, float, bool], ...] = ()
+    # painted layers: {"character" | part name: (stored + layer, stored - layer)}, see decode_paint
+    paint: Dict[str, Tuple[Optional[dict], Optional[dict]]] = field(default_factory=dict)
 
     def parts_on(self) -> List[str]:
         return [n for n in PART_NAMES if self.parts.get(n, PartSettings(False)).on]
@@ -161,20 +163,61 @@ def resolve_detail(box: BoxInfo, raw: Optional[dict]) -> BoxDetail:
                                     denoise=_denoise(p.get("denoise")), restore=_denoise(p.get("restore")))
     return BoxDetail(enabled=_bool(raw.get("enabled"), base.enabled), prompt=_str(raw.get("prompt")),
                      use_box_loras=_bool(raw.get("use_box_loras"), True), loras=tuple(loras), parts=parts,
-                     points=_points(raw.get("points")))
+                     paint=_paint(raw.get("paint")))
 
 
-def _points(value) -> Tuple[Tuple[float, float, bool], ...]:
-    out = []
-    for p in value if isinstance(value, list) else []:
-        if not isinstance(p, dict):
-            continue
-        x, y = p.get("x"), p.get("y")
-        if any(isinstance(v, bool) or not isinstance(v, (int, float)) for v in (x, y)):
-            continue
-        if 0 <= x <= 1 and 0 <= y <= 1:
-            out.append((float(x), float(y), p.get("label", 1) != 0))
-    return tuple(out)
+PAINT_TARGETS = ("character",) + PART_NAMES
+
+
+def _paint(value) -> Dict[str, Tuple[Optional[dict], Optional[dict]]]:
+    out = {}
+    if isinstance(value, dict):
+        for target in PAINT_TARGETS:
+            layers = value.get(target)
+            if isinstance(layers, dict):
+                add, sub = layers.get("add"), layers.get("sub")
+                out[target] = (add if isinstance(add, dict) else None, sub if isinstance(sub, dict) else None)
+    return out
+
+
+def parse_protect(text) -> Optional[dict]:
+    """The Protect layer (pixels no part may cover) from the ``detail`` widget, or None."""
+    try:
+        data = json.loads(text) if text and str(text).strip() else {}
+    except json.JSONDecodeError:
+        return None
+    p = data.get("protect") if isinstance(data, dict) else None
+    return p if isinstance(p, dict) else None
+
+
+def decode_paint(stored: Optional[dict], width: int, height: int) -> Optional[torch.Tensor]:
+    """A stored paint layer as bool [height, width], or None if absent or empty.
+
+    Storage (shared with web/paint.js): ``{"w": W, "h": H, "runs": [n0, n1, ...]}``, alternating run
+    lengths over the pixels in row-major order starting with unpainted; a layer stored at another size is
+    scaled nearest-neighbour, exactly as the editor does."""
+    if not isinstance(stored, dict):
+        return None
+    try:
+        sw, sh, runs = int(stored["w"]), int(stored["h"]), stored["runs"]
+    except (KeyError, TypeError, ValueError):
+        return None
+    if sw <= 0 or sh <= 0 or not isinstance(runs, list):
+        return None
+    src = torch.zeros(sw * sh, dtype=torch.bool)
+    i, cur = 0, False
+    for n in runs:
+        n = max(0, int(n)) if isinstance(n, (int, float)) and not isinstance(n, bool) else 0
+        end = min(src.numel(), i + n)
+        if cur:
+            src[i:end] = True
+        i, cur = end, not cur
+    src = src.view(sh, sw)
+    if (sw, sh) != (width, height):
+        ys = (torch.arange(height) * sh // height).clamp(max=sh - 1)
+        xs = (torch.arange(width) * sw // width).clamp(max=sw - 1)
+        src = src[ys][:, xs]
+    return src if bool(src.any()) else None
 
 
 # ----------------------------------------------------------------------------- rectangles
@@ -348,7 +391,7 @@ def pick_outline(candidates: Sequence[torch.Tensor], rect: Rect) -> Optional[tor
 # ----------------------------------------------------------------------------- ownership
 def owner_map(outlines: Sequence[torch.Tensor], claims: Optional[Sequence[Optional[torch.Tensor]]] = None) -> torch.Tensor:
     """For each pixel, the index of the topmost outline covering it (outlines in layer order), or -1.
-    ``claims`` (pixels the user marked with + points for a box) win over the layer order."""
+    ``claims`` (pixels the user painted as a box's character) win over the layer order."""
     owner = torch.full(outlines[0].shape, -1, dtype=torch.int64)
     for i, o in enumerate(outlines):            # later boxes overwrite: topmost wins
         owner[o] = i
@@ -495,14 +538,6 @@ class Sam3Runner:
             return full
         return list(self._memo((img_key, "person", crop), run))
 
-    def segment_points(self, image: torch.Tensor, img_key: str, positive, negative) -> torch.Tensor:
-        """The region SAM3 traces from point prompts ([(x, y)] pixels of ``image``): bool [H, W]."""
-        pos = [{"x": int(x), "y": int(y)} for x, y in positive]
-        neg = [{"x": int(x), "y": int(y)} for x, y in negative]
-        return self._memo((img_key, "points", tuple(map(tuple, positive)), tuple(map(tuple, negative))),
-                          lambda: self._run(image, positive_coords=json.dumps(pos),
-                                            negative_coords=json.dumps(neg) if neg else None))
-
     def find_each(self, image: torch.Tensor, img_key: str, crop: Rect, prompt: str) -> List[torch.Tensor]:
         """Each detection of ``prompt`` inside ``crop`` as its own bool [H, W] mask, kept inside its own
         detector box (as :meth:`find`)."""
@@ -530,7 +565,8 @@ class Sam3Runner:
 
 # ----------------------------------------------------------------------------- one image
 def mask_frame(image: torch.Tensor, boxes: Sequence[BoxInfo], details: Dict[str, BoxDetail],
-               canvas: Optional[Tuple[int, int]], runner, margin: float) -> FrameMasks:
+               canvas: Optional[Tuple[int, int]], runner, margin: float,
+               protect_layer: Optional[dict] = None) -> FrameMasks:
     """Outline and part masks for each detailed box of one image [H, W, C]."""
     H, W = int(image.shape[0]), int(image.shape[1])
     canvas = canvas or (W, H)
@@ -557,7 +593,15 @@ def mask_frame(image: torch.Tensor, boxes: Sequence[BoxInfo], details: Dict[str,
         todo.append((b, d, rect, outline, found))
     if not todo:
         return FrameMasks(W, H, [])
-    claims = apply_points(image, key, todo, runner)
+    claims = []
+    for i, (b, d, rect, outline, found) in enumerate(todo):   # painted character: added / removed, claimed
+        add, sub = (decode_paint(x, W, H) for x in d.paint.get("character", (None, None)))
+        if add is not None:
+            outline = outline | add
+        if sub is not None:
+            outline = outline & ~sub
+        todo[i] = (b, d, rect, outline, found)
+        claims.append(add)
     owner = owner_map([t[3] for t in todo], claims)
     raws = []
     for i, (b, d, rect, outline, _) in enumerate(todo):    # 2. parts, other characters greyed out
@@ -583,6 +627,16 @@ def mask_frame(image: torch.Tensor, boxes: Sequence[BoxInfo], details: Dict[str,
                 raw[n] = m if m is not None else torch.zeros(H, W, dtype=torch.bool)
         raws.append(raw)
     owned = assign_parts([t[3] for t in todo], raws, [grow_radius(t[2]) for t in todo], owner)
+    protect = decode_paint(protect_layer, W, H)
+    for (b, d, *_), parts in zip(todo, owned):            # painted parts, then Protect
+        for n in parts:
+            add, sub = (decode_paint(x, W, H) for x in d.paint.get(n, (None, None)))
+            if add is not None:
+                parts[n] = parts[n] | add
+            if sub is not None:
+                parts[n] = parts[n] & ~sub
+            if protect is not None:
+                parts[n] = parts[n] & ~protect
     out = []
     for (b, d, rect, outline, found), parts in zip(todo, owned):
         out.append(CharacterMask(id=b.id, name=b.name, label=b.label, caption=b.caption, color=b.color,
@@ -591,40 +645,13 @@ def mask_frame(image: torch.Tensor, boxes: Sequence[BoxInfo], details: Dict[str,
     return FrameMasks(W, H, out, owner)
 
 
-def apply_points(image, key, todo, runner) -> List[Optional[torch.Tensor]]:
-    """The user's points, per box: SAM3 traces the region at the box's + points (with its - points and
-    every other box's + points as negatives) and adds it to the outline as a claim; the region at its
-    - points is removed from the outline. Updates ``todo`` outlines in place; returns the claims."""
-    H, W = int(image.shape[0]), int(image.shape[1])
-    px = lambda p: (min(W - 1, round(p[0] * W)), min(H - 1, round(p[1] * H)))
-    plus = [[px(p) for p in t[1].points if p[2]] for t in todo]
-    minus = [[px(p) for p in t[1].points if not p[2]] for t in todo]
-    claims: List[Optional[torch.Tensor]] = []
-    for i, t in enumerate(todo):
-        outline, claim = t[3], None
-        others = [q for j, ps in enumerate(plus) if j != i for q in ps]
-        if plus[i]:
-            claim = runner.segment_points(image, key, plus[i], minus[i] + others)
-            claim = clean_mask(claim, clean_radius(t[2])) if claim.any() else None
-            if claim is not None:
-                outline = outline | claim
-        if minus[i]:
-            drop = runner.segment_points(image, key, minus[i], plus[i])
-            if drop.any():
-                outline = outline & ~drop
-                if claim is not None:
-                    claim = claim & ~drop
-        todo[i] = (t[0], t[1], t[2], outline, t[4])
-        claims.append(claim)
-    return claims
-
-
 def compute(images: torch.Tensor, regions: str, detail: str, runner, margin: float) -> CharacterMasks:
     doc = parse_document(regions)
     stored = parse_detail(detail)
     details = {b.id: resolve_detail(b, stored.get(b.id)) for b in doc.boxes}
     canvas = canvas_of(regions)
-    return CharacterMasks([mask_frame(images[i], doc.boxes, details, canvas, runner, margin)
+    protect = parse_protect(detail)
+    return CharacterMasks([mask_frame(images[i], doc.boxes, details, canvas, runner, margin, protect)
                            for i in range(images.shape[0])])
 
 

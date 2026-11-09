@@ -286,57 +286,95 @@ def test_clean_mask_fills_speckle_and_drops_specks():
     assert torch.equal(cm.clean_mask(near_edge, 2), near_edge)
 
 
+def rle(mask):
+    """A bool [H, W] mask in the editor's paint storage (web/paint.js encode)."""
+    flat = mask.flatten().tolist()
+    runs, cur, n = [], False, 0
+    for b in flat:
+        if bool(b) == cur:
+            n += 1
+        else:
+            runs.append(n)
+            cur, n = bool(b), 1
+    runs.append(n)
+    return {"w": mask.shape[1], "h": mask.shape[0], "runs": runs}
+
+
+def test_paint_storage_matches_the_editor():
+    """Same fixture as tests/web/paint.test.mjs."""
+    import os
+    path = os.path.join(os.path.dirname(__file__), "web", "fixtures", "paint_cases.json")
+    for case in json.load(open(path))["cases"]:
+        st = case["stored"]
+        m = cm.decode_paint(st, st["w"], st["h"])
+        bits = [0] * (st["w"] * st["h"]) if m is None else [int(v) for v in m.flatten().tolist()]
+        assert bits == case["bits"], case
+    small = {"w": 2, "h": 2, "runs": [0, 1, 2, 1]}                  # [1, 0, 0, 1], scaled to 4 x 4 (nearest)
+    assert cm.decode_paint(small, 4, 4).int().flatten().tolist() == [1, 1, 0, 0, 1, 1, 0, 0, 0, 0, 1, 1, 0, 0, 1, 1]
+    assert cm.decode_paint({"w": 2, "h": 2, "runs": [4]}, 2, 2) is None and cm.decode_paint(None, 2, 2) is None
+    assert cm.decode_paint({"w": "x"}, 2, 2) is None
+
+
 def hug_with_arm():
     """Left character (layer 0) reaches her arm across the right one (layer 1, on top), and the right
     character's person detection wrongly includes that arm."""
     boxes = [box("left", centred(0, 0, 100, 100)), box("right", centred(100, 0, 200, 100))]
     arm = (60, 50, 140, 60)
-    scene = {"person": [(5, 2, 98, 100), (102, 2, 195, 100)], "region": [arm],
-             "hand": [(130, 50, 140, 60), (160, 80, 170, 90)]}
-    scene["person"][1] = (102, 2, 195, 100)
+    scene = {"person": [(5, 2, 98, 100), (102, 2, 195, 100)], "hand": [(130, 50, 140, 60), (160, 80, 170, 90)]}
     return boxes, scene, arm
 
 
-def test_a_plus_point_claims_an_arm_over_the_layer_order():
+HANDS_ONLY = {"face": {"on": False}, "eyes": {"on": False}, "left_hand": {"on": True}, "right_hand": {"on": True}}
+
+
+def test_painted_character_claims_an_arm_over_the_layer_order():
     boxes, scene, arm = hug_with_arm()
-    runner = FakeRunner(scene)
-    hands = {"parts": {"face": {"on": False}, "eyes": {"on": False}, "hands": {"on": True}}}
-    stored = {"left": {**hands, "points": [{"x": 0.6, "y": 0.55, "label": 1}]}, "right": hands}
-    f = cm.mask_frame(torch.rand(H, W, 3), boxes, details(boxes, stored), None, runner, 0.15)
+    stored = {"left": {"parts": HANDS_ONLY, "paint": {"character": {"add": rle(rect_mask(*arm))}}},
+              "right": {"parts": HANDS_ONLY}}
+    f = cm.mask_frame(torch.rand(H, W, 3), boxes, details(boxes, stored), None, FakeRunner(scene), 0.15)
     left, right = f.boxes
-    assert left.outline[50:60, 60:140].all()                     # the whole arm, across the other box
-    assert (f.owner[50:60, 60:140] == 0).all()                    # hers, though the right box is on top
-    # her hand at the end of the arm is hers (her right hand, as seen: right of her middle)
-    assert left.found["right_hand"] and left.parts["right_hand"][50:60, 130:140].all()
+    assert left.outline[50:60, 60:140].all() and (f.owner[50:60, 60:140] == 0).all()   # hers, though right is on top
+    assert left.found["right_hand"] and left.parts["right_hand"][50:60, 130:140].all()  # her hand at the arm's end
     assert not right.parts["right_hand"][50:60, 130:140].any() and right.parts["right_hand"][80:90, 160:170].all()
-    # her + point was passed to SAM3 as a negative for nobody else's claim (right has no points)
-    assert [c for c in runner.calls if c[0] == "points"] == [("points", [(120, 55)], [])]
-    lm = cm.label_map(f)
-    assert lm[55, 120, 0] == 1 and lm[55, 170, 0] == 2
+    assert cm.label_map(f)[55, 120, 0] == 1
 
 
-def test_minus_points_remove_and_other_boxes_plus_points_are_negatives():
+def test_painted_minus_removes_from_the_outline():
     boxes, scene, arm = hug_with_arm()
-    scene["region"].append((150, 20, 190, 40))                    # something else on the right character
-    runner = FakeRunner(scene)
-    stored = {"right": {"points": [{"x": 0.6, "y": 0.55, "label": 0}, {"x": 0.85, "y": 0.3, "label": 1}]},
-              "left": {"points": [{"x": 0.6, "y": 0.55, "label": 1}]}}
-    f = cm.mask_frame(torch.rand(H, W, 3), boxes, details(boxes, stored), None, runner, 0.15)
-    left, right = f.boxes
-    assert not right.outline[50:60, 100:140].any()               # her - point: the arm isn't the right one's
-    assert left.outline[50:60, 100:140].all()
-    calls = [c for c in runner.calls if c[0] == "points"]
-    # right's + region: its own - point and left's + point as negatives
-    assert ("points", [(170, 30)], [(120, 55), (120, 55)]) in calls
-    # left's + region: right's + point as a negative
-    assert ("points", [(120, 55)], [(170, 30)]) in calls
+    scene["person"][1] = (60, 2, 195, 100)                               # right's outline grabbed the arm
+    stored = {"right": {"paint": {"character": {"sub": rle(rect_mask(*arm))}}}}
+    f = cm.mask_frame(torch.rand(H, W, 3), boxes, details(boxes, stored), None, FakeRunner(scene), 0.15)
+    assert not f.boxes[1].outline[50:60, 60:140].any() and f.boxes[1].outline[20, 150]
 
 
-def test_points_are_read_from_the_settings():
-    d = cm.resolve_detail(box("a", [0, 0, 1, 1]), {"points": [{"x": 0.5, "y": 0.25}, {"x": 0.1, "y": 0.2, "label": 0},
-                                                               {"x": 2, "y": 0.5}, {"x": "a", "y": 0}, "nope"]})
-    assert d.points == ((0.5, 0.25, True), (0.1, 0.2, False))
-    assert cm.resolve_detail(box("a", [0, 0, 1, 1]), None).points == ()
+def test_painted_parts_and_protect():
+    boxes, scene = frame_setup()
+    face_extra = rect_mask(50, 20, 60, 40)                              # paint the face wider
+    no_eye = rect_mask(43, 25, 47, 28)                                  # one "eye" is really a mark
+    text = rect_mask(120, 30, 140, 35)                                  # text across bob's face
+    stored = {"alice": {"paint": {"face": {"add": rle(face_extra)}, "eyes": {"sub": rle(no_eye)}}}}
+    det = details(boxes, stored)
+    f = cm.mask_frame(torch.rand(H, W, 3), boxes, det, None, FakeRunner(scene), 0.1, rle(text))
+    alice, bob = f.boxes
+    assert alice.parts["face"][20:40, 30:60].all()
+    assert not alice.parts["eyes"][25:28, 43:47].any() and alice.parts["eyes"][25:28, 33:37].all()
+    assert not bob.parts["face"][30:35, 120:140].any() and bob.parts["face"][36:40, 120:140].all()   # protected
+    # compute() reads the Protect layer from the detail settings
+    regions = json.dumps({"version": 2, "regions": [{"id": b.id, "bbox": list(b.bbox), "label": b.label} for b in boxes]})
+    detail = json.dumps({"version": 1, "boxes": {}, "protect": rle(text)})
+    out = cm.compute(torch.rand(1, H, W, 3), regions, detail, FakeRunner(scene), 0.1)
+    assert not out.frames[0].boxes[1].parts["face"][30:35, 120:140].any()
+
+
+def test_paint_is_read_from_the_settings():
+    d = cm.resolve_detail(box("a", [0, 0, 1, 1]), {"paint": {"character": {"add": {"w": 1, "h": 1, "runs": [0, 1]}},
+                                                             "face": {"sub": {"w": 1, "h": 1, "runs": [1]}, "add": "x"},
+                                                             "tail": {"add": {}}, "eyes": "nope"},
+                                                   "points": [{"x": 0.5, "y": 0.5}]})    # old points: ignored
+    assert sorted(d.paint) == ["character", "face"]
+    assert d.paint["face"][0] is None and d.paint["face"][1] == {"w": 1, "h": 1, "runs": [1]}
+    assert cm.parse_protect('{"protect": {"w": 1, "h": 1, "runs": [0, 1]}}') == {"w": 1, "h": 1, "runs": [0, 1]}
+    assert cm.parse_protect("") is None and cm.parse_protect("{bad") is None
 
 
 # ------------------------------------------------------------------------- SAM3 wrapper
@@ -436,21 +474,6 @@ def test_clip_to_boxes():
     assert torch.equal(cm.clip_to_boxes(m, [{"x": 1}]), m)                           # malformed: unchanged
 
 
-def test_runner_sends_points_as_comfyui_sam3_expects(fake_sam3):
-    r = cm.Sam3Runner(types.SimpleNamespace(model=object()), FakeClip(), 0.5, 2)
-    img = torch.rand(H, W, 3)
-    key = cm.image_key(img)
-    m = r.segment_points(img, key, [(120, 55)], [(30, 40), (170, 30)])
-    c = fake_sam3.calls[-1]
-    assert json.loads(c["pos"]) == [{"x": 120, "y": 55}] and json.loads(c["neg"]) == [{"x": 30, "y": 40}, {"x": 170, "y": 30}]
-    assert c["cond"] is None and c["bboxes"] is None and c["shape"] == (1, H, W, 3) and m.shape == (H, W)
-    r.segment_points(img, key, [(1, 2)], [])
-    assert fake_sam3.calls[-1]["neg"] is None
-    n = len(fake_sam3.calls)
-    r.segment_points(img, key, [(120, 55)], [(30, 40), (170, 30)])
-    assert len(fake_sam3.calls) == n                                  # memoised
-
-
 def test_runner_needs_comfyui_sam3(monkeypatch):
     monkeypatch.setitem(sys.modules, "comfy_extras.nodes_sam3", None)
     with pytest.raises(RuntimeError, match="SAM3"):
@@ -515,7 +538,7 @@ def test_detail_resolution_matches_the_editor():
         d = cm.resolve_detail(box("x", [0, 0, 1, 1], label=case["label"]), case["stored"])
         got = {"enabled": d.enabled, "prompt": d.prompt, "use_box_loras": d.use_box_loras,
                "loras": [list(e) for e in d.loras],
-               "points": [[x, y, 1 if pos else 0] for x, y, pos in d.points],
+               "paint": sorted(d.paint),
                "parts": {n: {"on": p.on, "prompt": p.prompt, "denoise": p.denoise, "restore": p.restore}
                          for n, p in d.parts.items()}}
         assert got == case["expected"], case
