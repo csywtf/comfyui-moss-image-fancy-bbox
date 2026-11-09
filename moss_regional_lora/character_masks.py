@@ -667,8 +667,12 @@ def _rgb(hex_color: str) -> Tuple[float, float, float]:
 
 
 def render_preview(image: torch.Tensor, frame: FrameMasks) -> torch.Tensor:
-    """The image dimmed outside the characters, each part tinted in its colour, boxes outlined: [H, W, 3]."""
-    img = image[..., :3].detach().cpu().float().clone()
+    """The image dimmed outside the characters, outlines tinted in their box's colour, boxes outlined, and
+    every part filled solid in its colour: [H, W, 3]. A part's fill is the same wherever it lies (inside an
+    outline or not, over another box), so what is coloured is exactly what the detailer redraws; where
+    parts overlap the finer one shows (eyes over face over skin)."""
+    src = image[..., :3].detach().cpu().float()
+    img = src.clone()
     inside = torch.zeros(frame.height, frame.width, dtype=torch.bool)
     for b in frame.boxes:
         inside |= b.outline
@@ -676,10 +680,14 @@ def render_preview(image: torch.Tensor, frame: FrameMasks) -> torch.Tensor:
     for b in frame.boxes:
         c = torch.tensor(_rgb(b.color))
         img[b.outline] = img[b.outline] * 0.8 + c * 0.2
-        for n in PART_NAMES:
-            m = b.parts.get(n)
+    for name in DETAIL_ORDER:                       # coarse to fine: finer parts are drawn last, on top
+        tint = torch.tensor(_rgb(PART_BY_NAME[name].color))
+        for b in frame.boxes:
+            m = b.parts.get(name)
             if m is not None and m.any():
-                img[m] = img[m] * 0.45 + torch.tensor(_rgb(PART_BY_NAME[n].color)) * 0.55
+                img[m] = src[m] * 0.25 + tint * 0.75   # from the plain image: solid, whatever is under it
+    for b in frame.boxes:
+        c = torch.tensor(_rgb(b.color))
         x0, y0, x1, y1 = b.rect
         t = max(1, round(max(frame.width, frame.height) / 400))
         img[y0:min(y0 + t, y1), x0:x1] = c

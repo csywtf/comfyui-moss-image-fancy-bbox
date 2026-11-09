@@ -273,6 +273,7 @@ class RegionEditor {
   destroy() {
     clearInterval(this.timer);
     this.ro?.disconnect();
+    this.panZoom?.dispose();
     this.curvePanel?.destroy();
     this.closePicker();
     this.closeJson();
@@ -345,7 +346,7 @@ class RegionEditor {
     this.root.addEventListener("keydown", (e) => this.onKey(e));
     // keyboard focus ComfyUI leaves alone: its Ctrl+Z undo and wheel forwarding stand aside (see viewport.js)
     this.keys = installKeySink(this.root);
-    installPanZoom({
+    this.panZoom = installPanZoom({
       focus: () => this.keys.focus(),
       canvas: c,
       root: this.root,

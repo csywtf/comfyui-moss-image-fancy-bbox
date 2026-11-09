@@ -121,6 +121,20 @@ window.addEventListener("keydown", (e) => {
   if (a && (a.tagName === "INPUT" || a.tagName === "TEXTAREA" || a.isContentEditable)) return;
   if ((e.ctrlKey || e.metaKey) && /^[zy]$/i.test(e.key)) window.__comfyUndo++;
 }, true);
+// its graph container also takes middle-button presses and drags in its capture phase, hands them to the
+// graph and stops them, unless their target is a focused text field
+window.__graphPan = 0;
+for (const type of ["pointerdown", "pointermove", "pointerup"]) {
+  document.getElementById("host").addEventListener(type, (e) => {
+    const middle = type === "pointermove" ? (e.buttons & 4) === 4 : e.button === 1 || e.buttons === 4;
+    if (!middle) return;
+    const t = e.target;
+    if ((t.tagName === "TEXTAREA" || t.tagName === "INPUT" || t.isContentEditable) && document.activeElement === t) return;
+    e.preventDefault();
+    e.stopPropagation();
+    window.__graphPan++;
+  }, true);
+}
 window.ready = true;
 </script></body></html>`;
 
@@ -412,6 +426,15 @@ await page.mouse.down();
 await page.mouse.move(cb.x + cb.width / 2 - 40, cb.y + cb.height / 2 + 15, { steps: 4 });
 await page.mouse.up();
 assert.equal(JSON.stringify(await detail()), before7);                                     // panning edits nothing
+// the middle button pans with any tool (ComfyUI would otherwise hand it to the graph)
+await page.keyboard.press("v");
+const mBefore = await mv();
+await page.mouse.move(cb.x + cb.width / 2, cb.y + cb.height / 2);
+await page.mouse.down({ button: "middle" });
+await page.mouse.move(cb.x + cb.width / 2 + 30, cb.y + cb.height / 2, { steps: 4 });
+await page.mouse.up({ button: "middle" });
+assert.ok(Math.abs((await mv()).ox - mBefore.ox - 30) < 1, "middle-drag pans the masks canvas");
+assert.equal(JSON.stringify(await detail()), before7);
 assert.match(await page.locator(".mrl-props .mrl-panel-head").innerText(), /Alice/);      // or deselects
 await page.keyboard.press("b");
 await strokeImg([[100, 40], [100, 40]], mImg);
@@ -426,9 +449,9 @@ await page.evaluate(() => { window.node.inputs[1].link = null; });
 await page.waitForFunction(() => /Connect the regions output/.test(document.querySelector(".mcm-boxes").textContent));
 console.log("disconnected ok");
 
-const comfy = await page.evaluate(() => ({ wheel: window.__graphWheel, undo: window.__comfyUndo }));
-assert.deepEqual(comfy, { wheel: 0, undo: 0 }, "ComfyUI's own wheel forwarding / undo never ran for editor input");
-console.log("comfyui wheel/undo stand-ins untouched ok");
+const comfy = await page.evaluate(() => ({ wheel: window.__graphWheel, undo: window.__comfyUndo, pan: window.__graphPan }));
+assert.deepEqual(comfy, { wheel: 0, undo: 0, pan: 0 }, "ComfyUI's own wheel / undo / middle-button forwarding never ran for editor input");
+console.log("comfyui wheel/undo/pan stand-ins untouched ok");
 assert.deepEqual(errors, []);
 console.log("PASS");
 await browser.close();

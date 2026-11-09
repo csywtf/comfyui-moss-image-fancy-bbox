@@ -293,7 +293,8 @@ not in the main node's regions, so changing them never regenerates the image: th
 cache, only this node re-runs, and SAM3 results are reused when only a prompt or denoise changed.
 
 Outputs: `character_masks` (each box's part masks with its caption, LoRAs and detail settings, for the
-detailer), `preview` (the image with the parts tinted) and `mask` (every part as one mask).
+detailer), `preview` (the image with each part filled solid in its colour, the same wherever it lies, so the
+coloured area is exactly what the detailer redraws; finer parts on top) and `mask` (every part as one mask).
 
 ## Regional detailer
 
