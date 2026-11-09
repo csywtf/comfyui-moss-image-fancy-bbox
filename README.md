@@ -276,7 +276,10 @@ and the zoom buttons, with the same zoom and pan controls as the main editor):
 - **Detail** (right, for the selected box): Detail on/off; a detail prompt added to every part's prompt
   (a trigger word, "green eyes"); whether to use the box's own LoRAs; detail-only LoRAs; and per part a
   checkbox, a prompt (empty: "detailed face" and so on), a denoise and a detail restore (both empty:
-  the detailer's defaults), with "found" / "not found" after a run. Hands are two parts, **left hand**
+  the detailer's defaults) and **crop** (whole crop: redraw the part together with its surroundings and
+  paste back only the part; without it the unchanged surroundings pull the redraw back to the old look,
+  so tick it to change a part's style, e.g. an anime hand to realistic, with a high denoise), with
+  "found" / "not found" after a run. Hands are two parts, **left hand**
   and **right hand**, as seen in the image, each with its own settings: with two or more hands found,
   the leftmost is the left one and the rightmost the right one (others join the nearer); where they
   touch, the shared pixels are split at the midpoint between them; a single hand is left or right of

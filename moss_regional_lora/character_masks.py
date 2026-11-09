@@ -89,6 +89,7 @@ class PartSettings:
     prompt: str = ""                     # "" = the part's hint
     denoise: Optional[float] = None      # None = the detailer's default
     restore: Optional[float] = None      # detail restoration; None = the detailer's default
+    whole_crop: bool = False             # redraw the whole crop (context too), then paste back only the part
 
 
 @dataclass(frozen=True)
@@ -160,7 +161,8 @@ def resolve_detail(box: BoxInfo, raw: Optional[dict]) -> BoxDetail:
             p = raw_parts.get(LEGACY_PARTS.get(n, ""))
         if isinstance(p, dict):
             parts[n] = PartSettings(on=_bool(p.get("on"), parts[n].on), prompt=_str(p.get("prompt")),
-                                    denoise=_denoise(p.get("denoise")), restore=_denoise(p.get("restore")))
+                                    denoise=_denoise(p.get("denoise")), restore=_denoise(p.get("restore")),
+                                    whole_crop=_bool(p.get("whole_crop"), False))
     return BoxDetail(enabled=_bool(raw.get("enabled"), base.enabled), prompt=_str(raw.get("prompt")),
                      use_box_loras=_bool(raw.get("use_box_loras"), True), loras=tuple(loras), parts=parts,
                      paint=_paint(raw.get("paint")))

@@ -405,3 +405,31 @@ def test_per_part_restore_overrides_the_node_default():
     assert dt.needs_reference(masks, 0.35, 0.0) is False
     masks.frames[0].boxes[0] = character("alice", {"face": (30, 30, 70, 80)}, detail={"parts": {"face": {"restore": 0.5}}})
     assert dt.needs_reference(masks, 0.35, 0.0) is True
+
+
+def test_whole_crop_redraws_the_surroundings_but_pastes_back_only_the_part():
+    """A part set to whole crop gets a noise mask covering the whole crop (its context is redrawn too),
+    yet the image still changes only under the part's feathered mask."""
+    bob = character("bob", {"face": (200, 30, 240, 80), "left_hand": (210, 150, 230, 170)},
+                    detail={"parts": {"left_hand": {"on": True, "whole_crop": True}}})
+    masks = cm.CharacterMasks([cm.FrameMasks(W, H, [bob])])
+    passes = list(dt.plan(masks, 0.5))
+    assert [(p.part, p.whole_crop) for p in passes] == [("face", False), ("left_hand", True)]
+    assert "whole crop" in dt.describe_pass(passes[1]) and "whole crop" not in dt.describe_pass(passes[0])
+    s = FakeSampler()
+    masks_seen = []
+    orig = s.__call__
+
+    def spy(pixels, noise_mask, p, seed):
+        masks_seen.append((p.part, float(noise_mask.min()), float(noise_mask.max())))
+        return orig(pixels, noise_mask, p, seed)
+    img = torch.rand(1, H, W, 3)
+    out = dt.detail(img, masks, spy, denoise=0.5, crop_size=256, padding=0.3, max_upscale=4.0, grow=4, feather=8,
+                    seed=0)
+    face, hand = masks_seen
+    assert face[1] == 0.0                                  # face: only the face is noised
+    assert hand[1] == 1.0 and hand[2] == 1.0               # hand: the whole crop is
+    touched = torch.zeros(H, W, dtype=torch.bool)
+    for p in passes:
+        touched |= dt.blend_mask(p.mask, 4, 8) > 0
+    assert torch.equal(out[0][~touched], img[0][~touched])  # still nothing changes outside the masks

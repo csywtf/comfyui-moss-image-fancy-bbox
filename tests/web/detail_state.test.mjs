@@ -67,7 +67,7 @@ test("overlay: selected box strong, others faint, finest part on top, nothing wh
 test("settings saved for 'hands' apply to both hands until one is edited", () => {
   const doc = { version: 1, boxes: { a: { parts: { hands: { on: true, denoise: 0.5 } } } } };
   const d = D.detailFor(doc, { id: "a", label: "character" });
-  assert.deepEqual(d.parts.left_hand, { on: true, prompt: "", denoise: 0.5, restore: null });
+  assert.deepEqual(d.parts.left_hand, { on: true, prompt: "", denoise: 0.5, restore: null, whole_crop: false });
   assert.deepEqual(d.parts.right_hand, d.parts.left_hand);
   d.parts.right_hand.restore = 0;
   const next = D.detailFor(D.setDetail(doc, "a", d), { id: "a", label: "character" });

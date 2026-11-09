@@ -24,7 +24,7 @@ const DEFAULT_ON = ["face", "eyes"];
 
 export function defaultDetail(label) {
   const parts = {};
-  for (const n of PART_NAMES) parts[n] = { on: DEFAULT_ON.includes(n), prompt: "", denoise: null, restore: null };
+  for (const n of PART_NAMES) parts[n] = { on: DEFAULT_ON.includes(n), prompt: "", denoise: null, restore: null, whole_crop: false };
   return { enabled: label === "character", prompt: "", use_box_loras: true, loras: [], parts, paint: {} };
 }
 
@@ -96,6 +96,7 @@ export function detailFor(doc, region) {
           prompt: typeof p.prompt === "string" ? p.prompt : "",
           denoise: unit(p.denoise),
           restore: unit(p.restore),
+          whole_crop: typeof p.whole_crop === "boolean" ? p.whole_crop : false,
         }
       : base.parts[n];
   }
