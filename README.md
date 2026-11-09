@@ -279,7 +279,9 @@ and the zoom buttons, with the same zoom and pan controls as the main editor):
   and **right hand**, as seen in the image, each with its own settings: with two or more hands found,
   the leftmost is the left one and the rightmost the right one (others join the nearer); where they
   touch, the shared pixels are split at the midpoint between them; a single hand is left or right of
-  the character's middle. Settings saved for "hands" before the split apply to both. With no box selected: SAM3's threshold, box margin and
+  the character's middle. Settings saved for "hands" before the split apply to both. On the preview
+  the left hand is green and the right hand pink, each with an **L** / **R** tag, and hovering over any
+  mask names its box and part beside the pointer. With no box selected: SAM3's threshold, box margin and
   refinement passes.
 
 Characters start with face and eyes on; other labels start off. The settings are stored on this node,

@@ -63,7 +63,7 @@ PARTS: Tuple[Part, ...] = (
     Part("eyes", "eye:4", "detailed eyes", "#2ec4ff"),
     # one "hand" search per character; each hand is then the left or right one as seen in the image
     Part("left_hand", "hand:4", "detailed hand", "#3ddc84", "left"),
-    Part("right_hand", "hand:4", "detailed hand", "#00a86b", "right"),
+    Part("right_hand", "hand:4", "detailed hand", "#ff5ca8", "right"),
     Part("hair", "hair:2", "detailed hair", "#b77dff"),
     Part("skin", "skin:6", "detailed skin", "#ffe14d"),
 )
