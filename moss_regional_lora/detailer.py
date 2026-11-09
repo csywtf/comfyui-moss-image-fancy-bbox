@@ -19,7 +19,9 @@ as its own pass on the image so far:
    detail**: the crop is also decoded without being redrawn, and what that round trip lost (resizing and
    the VAE) is added back, so only the model's changes are kept. At denoise 0 the image comes back
    unchanged.
-4. **Blend** the result back with the feathered mask. Pixels outside it are never touched.
+4. **Blend** the result back with the feathered mask. Pixels outside it are never touched, and neither
+   are other characters' pixels (by the masks' ownership map): growing and feathering a part's mask stop
+   at another character, so a hand resting on someone else doesn't repaint them.
 
 The sampling itself is a callable handed in by the node (ComfyUI's VAE and sampler); everything here is
 plain torch, tested without ComfyUI.
@@ -49,6 +51,7 @@ class Pass:
     denoise: float
     restore: Optional[float] = None            # detail restoration for this part; None = the node's
     whole_crop: bool = False                   # redraw the whole crop, not just the part; paste back the part
+    keep_out: Optional[torch.Tensor] = None    # bool [H, W]: other characters' pixels, never redrawn by this pass
 
 
 def part_prompt(b: CharacterMask, part: str) -> str:
@@ -75,7 +78,10 @@ def plan(masks: CharacterMasks, default_denoise: float, padding: float = 0.3, mi
     (empty masks) are skipped. A part in pieces far apart (two hands on opposite sides) becomes one pass
     per group of pieces whose crops would overlap (see :func:`split_mask`), each with its own crop."""
     for f, frame in enumerate(masks.frames):
-        for b in frame.boxes:
+        owner = frame.owner
+        for i, b in enumerate(frame.boxes):
+            # other characters' pixels: the grown, feathered edge of this box's parts stops there
+            others = (owner >= 0) & (owner != i) if owner is not None else None
             for part in DETAIL_ORDER:
                 m = b.parts.get(part)
                 if m is None or not bool(m.any()):
@@ -85,8 +91,9 @@ def plan(masks: CharacterMasks, default_denoise: float, padding: float = 0.3, mi
                 restore = s.restore if s is not None else None
                 whole = bool(s.whole_crop) if s is not None else False
                 for piece in split_mask(m, padding, min_side, margin):
+                    keep_out = others & ~piece if others is not None and others.shape == piece.shape else None
                     yield Pass(f, b.name, part, piece, part_prompt(b, part), pass_loras(b), float(denoise), restore,
-                               whole)
+                               whole, keep_out)
 
 
 GRID = 256    # pieces are found on a grid this many cells across, so it stays quick on large images
@@ -266,11 +273,14 @@ Sampler = Callable[[torch.Tensor, torch.Tensor, Pass, int], Tuple[torch.Tensor, 
 
 def detail_frame(image: torch.Tensor, passes: Sequence[Pass], sample: Sampler, crop_size: int, padding: float,
                  max_upscale: float, grow: int, feather: float, seed: int, on_pass=None,
-                 restore: float = 1.0) -> torch.Tensor:
-    """Run ``passes`` on one image [H, W, C]; each works on the image as detailed so far."""
+                 restore: float = 1.0, keep: Optional[list] = None) -> torch.Tensor:
+    """Run ``passes`` on one image [H, W, C]; each works on the image as detailed so far. ``keep``: a list
+    that receives each pass's crop as sampled and as redrawn, side by side (to see what the model did)."""
     out = image.detach().cpu().float().clone()
     for k, p in enumerate(passes):
         soft = blend_mask(p.mask, grow, feather)
+        if p.keep_out is not None:
+            soft = soft * ~p.keep_out        # never into another character (it may sit right next to this part)
         x0, y0, x1, y1 = crop_region(soft > 0, padding, crop_size / max_upscale)
         w, h = x1 - x0, y1 - y0
         s = scale_for((x0, y0, x1, y1), crop_size, max_upscale)
@@ -285,6 +295,8 @@ def detail_frame(image: torch.Tensor, passes: Sequence[Pass], sample: Sampler, c
         else:
             big_mask = pad_to_cells(resize(a, tw, th, "area" if s < 1 else "lanczos").clamp(0, 1), value=0.0)
         result, reference = sample(big, big_mask, p, seed + k)
+        if keep is not None:
+            keep.append(torch.cat([big[:th, :tw, :3], result[:th, :tw, :3].to(big)], dim=1).clamp(0, 1))
         back = "area" if s > 1 else "lanczos"          # area exactly undoes a whole-number upscale's size
         res = resize(result[:th, :tw, :3], w, h, back)
         r = p.restore if p.restore is not None else restore
@@ -303,14 +315,26 @@ def detail_frame(image: torch.Tensor, passes: Sequence[Pass], sample: Sampler, c
 
 def detail(images: torch.Tensor, masks: CharacterMasks, sample: Sampler, *, denoise: float, crop_size: int,
            padding: float, max_upscale: float, grow: int, feather: float, seed: int, on_pass=None,
-           restore: float = 1.0) -> torch.Tensor:
+           restore: float = 1.0, keep: Optional[list] = None) -> torch.Tensor:
     passes = list(plan(masks, denoise, padding, crop_size / max_upscale, grow + feather))
     out = []
     for f in range(images.shape[0]):
         mine = [p for p in passes if p.frame == f] if f < len(masks.frames) else []
         out.append(detail_frame(images[f], mine, sample, crop_size, padding, max_upscale, grow, feather,
-                                seed + 1000 * f, on_pass, restore) if mine else images[f].detach().cpu().float())
+                                seed + 1000 * f, on_pass, restore, keep) if mine else images[f].detach().cpu().float())
     return torch.stack(out)
+
+
+def stack_previews(previews: Sequence[torch.Tensor]) -> torch.Tensor:
+    """Images of different sizes as one batch [N, H, W, 3], each padded with grey to the largest."""
+    if not previews:
+        return torch.full((1, 64, 64, 3), 0.5)
+    h = max(t.shape[0] for t in previews)
+    w = max(t.shape[1] for t in previews)
+    out = torch.full((len(previews), h, w, 3), 0.5)
+    for i, t in enumerate(previews):
+        out[i, :t.shape[0], :t.shape[1]] = t.detach().cpu().float()
+    return out
 
 
 def needs_reference(masks: CharacterMasks, denoise: float, restore: float) -> bool:

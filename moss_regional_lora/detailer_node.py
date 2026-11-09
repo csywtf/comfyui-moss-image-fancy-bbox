@@ -6,7 +6,7 @@ import logging
 import os
 from collections import OrderedDict
 
-from .detailer import count_passes, describe_pass, detail, needs_reference
+from .detailer import count_passes, describe_pass, detail, needs_reference, stack_previews
 
 log = logging.getLogger("moss_regional_lora")
 
@@ -153,9 +153,12 @@ class MossRegionalDetailer:
             },
         }
 
-    RETURN_TYPES = ("IMAGE",)
-    RETURN_NAMES = ("image",)
-    OUTPUT_TOOLTIPS = ("The image with every masked part redrawn with its character's prompt and LoRAs.",)
+    RETURN_TYPES = ("IMAGE", "IMAGE")
+    RETURN_NAMES = ("image", "passes")
+    OUTPUT_TOOLTIPS = ("The image with every masked part redrawn with its character's prompt and LoRAs.",
+                       "One image per pass, in the order of the log: the crop as it went into the sampler (left) "
+                       "and as the model redrew it (right), before it is blended back. Connect a Preview Image "
+                       "to see what each pass's prompt and LoRAs actually did.")
     FUNCTION = "run"
     CATEGORY = "model_patches/moss_image"
     DESCRIPTION = ("Redraws each character's face, eyes, hands, hair and skin (as masked by MOSS-Image Character "
@@ -167,11 +170,11 @@ class MossRegionalDetailer:
         if stop_before_detailing:
             from comfy_execution.graph_utils import ExecutionBlocker
             log.info("[MOSS Regional Detailer] stopped before detailing (untick 'stop_before_detailing' to run)")
-            return (ExecutionBlocker(None),)       # silently skips everything after this node
+            return (ExecutionBlocker(None), ExecutionBlocker(None))   # silently skips everything after this node
         total = count_passes(character_masks, denoise, padding, crop_size / max_upscale, mask_grow + feather)
         if total == 0:
             log.info("[MOSS Regional Detailer] no part masks to detail; image passed through")
-            return (image,)
+            return (image, stack_previews([]))
         import comfy.utils
         bar = comfy.utils.ProgressBar(total)
         sampler = _Sampler(model, clip, vae, negative, steps, cfg, sampler_name, scheduler,
@@ -181,7 +184,8 @@ class MossRegionalDetailer:
             log.info("[MOSS Regional Detailer] %d/%d: %s", k + 1, total, describe_pass(p))
             bar.update(1)
 
+        previews = []
         out = detail(image, character_masks, sampler, denoise=denoise, crop_size=crop_size, padding=padding,
                      max_upscale=max_upscale, grow=mask_grow, feather=feather, seed=seed, on_pass=on_pass,
-                     restore=restore_detail)
-        return (out.to(image.device, image.dtype),)
+                     restore=restore_detail, keep=previews)
+        return out.to(image.device, image.dtype), stack_previews(previews).to(image.device, image.dtype)
