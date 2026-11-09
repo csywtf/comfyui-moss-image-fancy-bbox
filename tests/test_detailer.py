@@ -283,7 +283,8 @@ def run_node(node_mod, masks, **kw):
 
 def test_node_samples_each_part_with_its_loras_prompt_and_negative(fake_comfy):
     node_mod, calls = fake_comfy
-    (out,), args = run_node(node_mod, two_characters(), negative="NEG", restore_detail=0.0)
+    (out, previews), args = run_node(node_mod, two_characters(), negative="NEG", restore_detail=0.0)
+    assert previews.shape[0] == 4 and previews.shape[-1] == 3                # one before/after per pass
     assert out.shape == (1, H, W, 3)
     ks = calls["ksampler"]
     assert len(ks) == 4 and [k["seed"] for k in ks] == [5, 6, 7, 8]
@@ -321,16 +322,17 @@ def test_node_without_negative_encodes_an_empty_one(fake_comfy):
 
 def test_node_stop_before_detailing_blocks_silently(fake_comfy):
     node_mod, calls = fake_comfy
-    (out,), _ = run_node(node_mod, two_characters(), stop_before_detailing=True)
+    (out, previews), _ = run_node(node_mod, two_characters(), stop_before_detailing=True)
     assert type(out).__name__ == "ExecutionBlocker" and out.message is None
+    assert type(previews).__name__ == "ExecutionBlocker"
     assert calls["ksampler"] == []
 
 
 def test_node_with_nothing_to_detail_passes_the_image_through(fake_comfy):
     node_mod, calls = fake_comfy
     img = torch.rand(1, H, W, 3)
-    (out,), _ = run_node(node_mod, cm.CharacterMasks([cm.FrameMasks(W, H, [])]), image=img)
-    assert out is img and calls["ksampler"] == []
+    (out, previews), _ = run_node(node_mod, cm.CharacterMasks([cm.FrameMasks(W, H, [])]), image=img)
+    assert out is img and calls["ksampler"] == [] and previews.shape == (1, 64, 64, 3)
 
 
 def test_node_is_registered():
@@ -339,7 +341,8 @@ def test_node_is_registered():
     assert node.NODE_DISPLAY_NAME_MAPPINGS["MossRegionalDetailer"] == "MOSS-Image Regional Detailer"
     req, opt = cls.INPUT_TYPES()["required"], cls.INPUT_TYPES()["optional"]
     assert req["character_masks"][0] == "MOSS_CHARACTER_MASKS" and "stop_before_detailing" in req
-    assert opt["negative"][0] == "CONDITIONING" and cls.RETURN_TYPES == ("IMAGE",)
+    assert opt["negative"][0] == "CONDITIONING" and cls.RETURN_TYPES == ("IMAGE", "IMAGE")
+    assert cls.RETURN_NAMES == ("image", "passes")
 
 
 # ------------------------------------------------------------------------- pieces far apart
@@ -433,3 +436,49 @@ def test_whole_crop_redraws_the_surroundings_but_pastes_back_only_the_part():
     for p in passes:
         touched |= dt.blend_mask(p.mask, 4, 8) > 0
     assert torch.equal(out[0][~touched], img[0][~touched])  # still nothing changes outside the masks
+
+
+def test_grown_feathered_edge_stops_at_other_characters():
+    """A thin part right next to another character: growing and feathering its mask would spread onto the
+    neighbour; the pass must leave every pixel the neighbour owns exactly as it was."""
+    real = character("real", {"left_hand": (100, 50, 106, 120)}, detail={"parts": {"left_hand": {"on": True}}})
+    anime = character("anime", {"left_hand": (107, 50, 160, 120)}, detail={"parts": {"left_hand": {"on": False}}})
+    anime.parts.pop("left_hand")                           # not detailed: only its ownership matters here
+    owner = torch.full((H, W), -1, dtype=torch.int64)
+    owner[:, :106] = 0                                     # real owns the left, anime the right
+    owner[:, 107:] = 1
+    masks = cm.CharacterMasks([cm.FrameMasks(W, H, [real, anime], owner)])
+    (p,) = list(dt.plan(masks, 0.5))
+    assert p.keep_out is not None and bool(p.keep_out[60, 130]) and not bool(p.keep_out[60, 103])
+    img = torch.rand(1, H, W, 3)
+    seen = []
+
+    def sampler(pixels, noise_mask, p, seed):
+        seen.append(noise_mask)
+        return torch.ones_like(pixels), None
+    out = dt.detail(img, masks, sampler, denoise=0.5, crop_size=256, padding=0.3, max_upscale=4.0, grow=6,
+                    feather=12, seed=0)
+    assert torch.equal(out[0][owner == 1], img[0][owner == 1])        # the neighbour is untouched
+    assert torch.allclose(out[0, 80, 103], torch.ones(3))             # the part itself is redrawn
+    assert bool((out[0, 80, 106] != img[0, 80, 106]).any())           # unowned edge pixels may still blend
+    # without an ownership map (older results) the edge spreads as before
+    masks.frames[0].owner = None
+    out2 = dt.detail(img, masks, sampler, denoise=0.5, crop_size=256, padding=0.3, max_upscale=4.0, grow=6,
+                     feather=12, seed=0)
+    assert not torch.equal(out2[0][owner == 1], img[0][owner == 1])
+
+
+def test_pass_previews_show_each_crop_before_and_after():
+    masks = two_characters()
+    keep = []
+    img = torch.rand(1, H, W, 3)
+    dt.detail(img, masks, FakeSampler(), denoise=0.35, crop_size=256, padding=0.3, max_upscale=4.0, grow=4,
+              feather=8, seed=0, keep=keep)
+    assert len(keep) == 4                                               # one per pass, in log order
+    for k, t in enumerate(keep):
+        h, w2, c = t.shape
+        assert c == 3 and w2 % 2 == 0
+        assert torch.allclose(t[:, w2 // 2:], torch.full((h, w2 // 2, 3), 0.1 * (k + 1)))   # right: the redraw
+    batch = dt.stack_previews(keep)
+    assert batch.shape[0] == 4 and batch.shape[1] == max(t.shape[0] for t in keep)
+    assert dt.stack_previews([]).shape == (1, 64, 64, 3)

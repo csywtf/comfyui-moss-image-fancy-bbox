@@ -333,7 +333,13 @@ fine (skin, hair, face, hands, eyes), each as its own pass on the image so far:
    the Character Masks editor: keep it at 1 to refine a part, and use 0 (with a higher denoise, ~0.65)
    to change its style, e.g. a hand that was generated in the other character's style.
 4. **Blend** it back with the feathered mask. Pixels outside every part's feathered mask are untouched,
-   bit for bit.
+   bit for bit, and so are other characters' pixels: growing and feathering a part's mask stop where the
+   masks say another character begins, so a thin part (a few fingers wrapped around someone) can't
+   repaint, or merge into, the character next to it.
+
+**See what each pass drew:** connect a Preview Image to the `passes` output. It holds one image per
+pass, in the order of the log: the crop as it went into the sampler (left) and as the model redrew it
+(right), before it is blended back.
 
 Use the same `cfg`, `sampler_name` and `scheduler` as your KSampler.
 
