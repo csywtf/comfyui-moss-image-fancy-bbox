@@ -58,6 +58,13 @@ def pass_loras(b: CharacterMask) -> Tuple[Tuple[str, float], ...]:
     return (tuple(b.loras) if b.detail.use_box_loras else ()) + tuple(b.detail.loras)
 
 
+def describe_pass(p: Pass) -> str:
+    """One log line: whose part, with which denoise, LoRAs and prompt (so a run shows what was used)."""
+    loras = ", ".join(f"{name} {w:g}" for name, w in p.loras) or "none"
+    prompt = p.prompt if len(p.prompt) <= 160 else p.prompt[:157] + "..."
+    return f"{p.box} {p.part} (denoise {p.denoise:.2f}; LoRAs: {loras}; prompt: {prompt})"
+
+
 def plan(masks: CharacterMasks, default_denoise: float, padding: float = 0.3, min_side: float = 0.0,
          margin: float = 0.0) -> Iterator[Pass]:
     """Every pass, in order: per image, characters back to front, parts coarse to fine. Parts not found
