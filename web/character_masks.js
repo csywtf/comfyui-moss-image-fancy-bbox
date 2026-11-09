@@ -173,6 +173,7 @@ class MasksEditor {
     this.canvas.addEventListener("pointercancel", (e) => this.onCanvasUp(e));
     this.canvas.addEventListener("pointerleave", () => {
       this.hover = null;
+      this.hoverPart = null;
       this.requestDraw();
     });
     this.root.addEventListener("pointerdown", (e) => e.stopPropagation());
@@ -496,6 +497,7 @@ class MasksEditor {
       g.drawImage(lab, 0, 0);
       this.image = img;
       this.labels = g.getImageData(0, 0, c.width, c.height);
+      this.tags = D.partTags(this.labels.data, c.width, c.height);
       const ci = document.createElement("canvas");
       ci.width = img.naturalWidth;
       ci.height = img.naturalHeight;
@@ -504,6 +506,7 @@ class MasksEditor {
       this.pixels = gi.getImageData(0, 0, ci.width, ci.height);
     } catch {
       this.image = this.labels = this.pixels = null;
+      this.tags = [];
     }
     this.layers = null;
     this.paintCanvas = null;
@@ -713,6 +716,12 @@ class MasksEditor {
   onCanvasMove(e) {
     const { x, y } = this.eventPoint(e);
     if (this.canvas.style.cursor !== this.toolCursor()) this.canvas.style.cursor = this.toolCursor();
+    // which part is under the pointer, named beside it (so touching hands can be told apart)
+    const part = this.partUnder(x, y);
+    if (part?.text !== this.hoverPart?.text || (part && (Math.abs(part.x - this.hoverPart.x) > 0.5 || Math.abs(part.y - this.hoverPart.y) > 0.5))) {
+      this.hoverPart = part;
+      this.requestDraw();
+    }
     if (this.tool === "add" || this.tool === "sub") {
       this.hover = { x, y };
       if (this.stroke) {
@@ -722,6 +731,42 @@ class MasksEditor {
       }
       this.requestDraw();
     }
+  }
+
+  /** {text, x, y} naming the box and part at image point (x, y) of the last run's masks, or null. */
+  partUnder(x, y) {
+    const lab = this.labels;
+    if (!lab || !this.result || x < 0 || y < 0) return null;
+    const lx = Math.floor((x * lab.width) / this.view().W), ly = Math.floor((y * lab.height) / this.view().H);
+    if (lx >= lab.width || ly >= lab.height) return null;
+    const hit = D.partAt(lab.data, (ly * lab.width + lx) * 4);
+    if (!hit || hit.part < 0) return null;
+    const id = this.result.boxes[hit.box]?.id;
+    const region = this.boxes().find(({ region }) => region.id === id)?.region;
+    const who = region ? region.name || region.id : `box ${hit.box + 1}`;
+    return { text: `${who} · ${D.PARTS[hit.part].label}`, color: D.PARTS[hit.part].color, x, y };
+  }
+
+  /** A small label in screen space: dark text on a pill of ``color``. */
+  pill(g, text, color, sx, sy, alpha = 1, anchor = "center") {
+    g.save();
+    g.globalAlpha = alpha;
+    g.font = "bold 11px sans-serif";
+    const w = Math.ceil(g.measureText(text).width) + 10, h = 16;
+    const x = anchor === "center" ? sx - w / 2 : sx;
+    const y = anchor === "center" ? sy - h / 2 : sy;
+    g.fillStyle = color;
+    g.strokeStyle = "rgba(0,0,0,.75)";
+    g.lineWidth = 1.5;
+    g.beginPath();
+    g.roundRect ? g.roundRect(x, y, w, h, 8) : g.rect(x, y, w, h);
+    g.fill();
+    g.stroke();
+    g.fillStyle = "#111";
+    g.textAlign = "center";
+    g.textBaseline = "middle";
+    g.fillText(text, x + w / 2, y + h / 2 + 0.5);
+    g.restore();
   }
 
   onCanvasUp(e) {
@@ -795,6 +840,14 @@ class MasksEditor {
       g.globalAlpha = 1;
       this.overlay = this.overlay || this.buildOverlay();
       if (this.overlay) g.drawImage(this.overlay, v.ox, v.oy, v.W * v.s, v.H * v.s);
+      // L / R on each hand, so a pair that touches can be told apart
+      if (this.labels && this.result) {
+        const kx = v.W / this.labels.width, ky = v.H / this.labels.height;
+        const sel = this.resultBox(this.selected)?.index ?? -1;
+        for (const t of this.tags || []) {
+          this.pill(g, t.text, D.PARTS[t.part].color, v.ox + t.x * kx * v.s, v.oy + t.y * ky * v.s, sel < 0 || sel === t.box ? 1 : 0.4);
+        }
+      }
     } else {
       g.fillStyle = "#888";
       g.font = "12px sans-serif";
@@ -825,6 +878,10 @@ class MasksEditor {
         g.drawImage(this.paintCanvas, v.ox, v.oy, v.W * v.s, v.H * v.s);
         g.imageSmoothingEnabled = true;
       }
+    }
+    if (this.hoverPart && !this.stroke) {
+      const hx = v.ox + this.hoverPart.x * v.s + 14, hy = v.oy + this.hoverPart.y * v.s + 10;
+      this.pill(g, this.hoverPart.text, this.hoverPart.color, Math.min(hx, v.cw - 140), Math.min(hy, v.ch - 18), 0.95, "corner");
     }
     if (this.hover && (this.tool === "add" || this.tool === "sub")) {
       g.beginPath();

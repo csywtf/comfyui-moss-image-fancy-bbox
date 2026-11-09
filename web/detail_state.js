@@ -11,7 +11,7 @@ export const PARTS = [
   { name: "face", label: "face", hint: "detailed face", color: "#ff9f1c" },
   { name: "eyes", label: "eyes", hint: "detailed eyes", color: "#2ec4ff" },
   { name: "left_hand", label: "left hand", hint: "detailed hand", color: "#3ddc84" },   // as seen in the image
-  { name: "right_hand", label: "right hand", hint: "detailed hand", color: "#00a86b" },
+  { name: "right_hand", label: "right hand", hint: "detailed hand", color: "#ff5ca8" },
   { name: "hair", label: "hair", hint: "detailed hair", color: "#b77dff" },
   { name: "skin", label: "skin", hint: "detailed skin", color: "#ffe14d" },
 ];
@@ -173,4 +173,54 @@ export function overlayPixels(labels, boxColors, selected) {
     out[i + 3] = a;
   }
   return out;
+}
+
+/** The part shown at label-map pixel ``i`` (index into the RGBA data): {box, part} (0-based box, PARTS
+ * index; part -1 = outline only), or null outside every character. Same precedence as the overlay. */
+export function partAt(labels, i) {
+  const box = labels[i] - 1;
+  if (box < 0) return null;
+  const bits = labels[i + 1];
+  for (const k of FINEST_FIRST) if (bits & (1 << k)) return { box, part: k };
+  return labels[i + 2] ? { box, part: -1 } : null;
+}
+
+// the parts tagged on the overlay, so a pair can be told apart where they touch
+export const TAGGED_PARTS = { left_hand: "L", right_hand: "R" };
+
+/**
+ * Where to put the tags: one per box and tagged part found in the label map (w x h RGBA), at the part's
+ * pixel nearest its centre (the centre itself can fall outside a curled hand). [{box, part, text, x, y}],
+ * x and y in label-map pixels (pixel centres).
+ */
+export function partTags(labels, w, h) {
+  const tagged = Object.keys(TAGGED_PARTS).map((n) => PART_NAMES.indexOf(n));
+  const acc = new Map(); // "box:part" -> {box, part, sx, sy, n, pts}
+  for (let y = 0, i = 0; y < h; y++) {
+    for (let x = 0; x < w; x++, i += 4) {
+      const box = labels[i] - 1;
+      if (box < 0 || !labels[i + 1]) continue;
+      for (const k of tagged) {
+        if (!(labels[i + 1] & (1 << k))) continue;
+        const key = `${box}:${k}`;
+        let a = acc.get(key);
+        if (!a) acc.set(key, (a = { box, part: k, sx: 0, sy: 0, n: 0, pts: [] }));
+        a.sx += x;
+        a.sy += y;
+        a.n++;
+        a.pts.push(x, y);
+      }
+    }
+  }
+  const out = [];
+  for (const a of acc.values()) {
+    const cx = a.sx / a.n, cy = a.sy / a.n;
+    let best = 0, bd = Infinity;
+    for (let j = 0; j < a.pts.length; j += 2) {
+      const d = (a.pts[j] - cx) ** 2 + (a.pts[j + 1] - cy) ** 2;
+      if (d < bd) [bd, best] = [d, j];
+    }
+    out.push({ box: a.box, part: a.part, text: TAGGED_PARTS[PART_NAMES[a.part]], x: a.pts[best] + 0.5, y: a.pts[best + 1] + 0.5 });
+  }
+  return out.sort((p, q) => p.box - q.box || p.part - q.part);
 }

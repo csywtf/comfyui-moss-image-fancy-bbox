@@ -94,6 +94,8 @@ const labels = png(200, 100, (g) => {
     d.data[i + 3] = 255;
     if (x >= 12 && x < 108 && y >= 12 && y < 88) { d.data[i] = 1; d.data[i + 2] = 255; }
     if (x >= 30 && x < 50 && y >= 20 && y < 40) d.data[i + 1] = 1;                 // alice face
+    if (x >= 60 && x < 70 && y >= 45 && y < 60) d.data[i + 1] = 4;                 // her hands, touching
+    if (x >= 70 && x < 80 && y >= 45 && y < 60) d.data[i + 1] = 8;
     if (x >= 120 && x < 178 && y >= 12 && y < 88) { d.data[i] = 2; d.data[i + 2] = 255; }
     if (x >= 130 && x < 150 && y >= 20 && y < 40) d.data[i + 1] = 1;               // bob face
   }
@@ -236,6 +238,26 @@ assert.match(await page.locator(".mrl-props .mrl-panel-head").innerText(), /Deta
 assert.match(await page.locator(".mrl-props").innerText(), /found no character/);        // outline fallback
 assert.match(await page.locator(".mrl-props").innerText(), /no caption/);
 console.log("result preview ok");
+
+// hands: an L and an R tag on alice's touching hands; hovering names the part under the pointer
+const tags = await page.evaluate(() => window.node.__mcmEditor.tags.map((t) => [t.box, t.text, Math.floor(t.x), Math.floor(t.y)]));
+assert.deepEqual(tags.map((t) => t.slice(0, 2)), [[0, "L"], [0, "R"]]);
+assert.ok(tags[0][2] >= 60 && tags[0][2] < 70 && tags[1][2] >= 70 && tags[1][2] < 80, JSON.stringify(tags));
+const hoverText = async (x, y) => {
+  const p = await page.evaluate(([x, y]) => {
+    const c = document.querySelector(".mrl-canvas-wrap canvas").getBoundingClientRect();
+    const s = Math.min((c.width - 2) / 200, (c.height - 2) / 100);
+    return { x: c.left + (c.width - 200 * s) / 2 + x * s, y: c.top + (c.height - 100 * s) / 2 + y * s };
+  }, [x, y]);
+  await page.mouse.move(p.x, p.y);
+  return page.evaluate(() => window.node.__mcmEditor.hoverPart?.text ?? null);
+};
+assert.equal(await hoverText(75, 52), "Alice · right hand");
+if (process.argv[2]) await page.locator(".mrl-canvas-wrap").screenshot({ path: process.argv[2].replace(/\.png$/, "-hands.png") });
+assert.equal(await hoverText(64, 52), "Alice · left hand");
+assert.equal(await hoverText(40, 30), "Alice · face");
+assert.equal(await hoverText(90, 70), null);                                                 // outline only
+console.log("hand tags ok");
 
 // 5. painting: brushes add to / remove from the target, undo / redo, painting a part ticks it, Protect, wand
 async function imgPx(x, y) {
