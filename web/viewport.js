@@ -214,7 +214,11 @@ export function installKeySink(root) {
   });
   // a press anywhere in the editor except its own fields (buttons, panels, the canvas) keeps the focus here
   root.addEventListener("pointerdown", (e) => {
-    if (!isTextEntry(e.target)) requestAnimationFrame(focus);
+    if (isTextEntry(e.target)) return;
+    // a frame later, unless a text field took the focus meanwhile (never pull it out of one mid-edit)
+    requestAnimationFrame(() => {
+      if (!isTextEntry(document.activeElement)) focus();
+    });
   });
   root.addEventListener("focusin", (e) => {
     if (e.target === root) focus();

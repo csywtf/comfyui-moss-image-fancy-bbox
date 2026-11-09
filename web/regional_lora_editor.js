@@ -181,6 +181,31 @@ function hexToRgba(hex, a) {
 }
 
 /** File name without folders or extension, for display ("MOSS Image\\concept\\x.safetensors" -> "x"). */
+/**
+ * Keep a resizable text box at the height the user last dragged it to. The panels are rebuilt whenever
+ * the selection changes, so the height is remembered per kind of box (``key``) in this browser, for every
+ * node, and survives reloads. Returns the textarea.
+ */
+const HEIGHT_PREFIX = "mrl.textHeight.";
+export function rememberHeight(area, key) {
+  let saved = null;
+  try {
+    saved = localStorage.getItem(HEIGHT_PREFIX + key);
+  } catch {}
+  if (saved && /^\d+(\.\d+)?px$/.test(saved)) area.style.height = saved;
+  const store = () => {
+    const h = area.style.height; // the resize handle sets this inline
+    if (!h || h === saved) return;
+    saved = h;
+    try {
+      localStorage.setItem(HEIGHT_PREFIX + key, h);
+    } catch {}
+  };
+  area.addEventListener("pointerup", store);
+  area.addEventListener("mouseup", store);
+  return area;
+}
+
 export function loraDisplayName(path) {
   if (!path) return "(choose a LoRA)";
   const base = String(path).split(/[\\/]/).pop();
@@ -1172,7 +1197,7 @@ class RegionEditor {
   captionSection() {
     const w = this.wCaption;
     if (!w) return null;
-    const area = el("textarea", { class: "mrl-caption", placeholder: "Description of the whole image (the layout prompt's summary caption)" });
+    const area = rememberHeight(el("textarea", { class: "mrl-caption", placeholder: "Description of the whole image (the layout prompt's summary caption)" }), "imageCaption");
     area.value = typeof w.value === "string" ? w.value : "";
     // written on every keystroke, so queueing straight from the textarea uses what was typed
     area.addEventListener("input", () => this.setWidget("caption", area.value));
@@ -1327,7 +1352,7 @@ class RegionEditor {
     if (!S.LABELS.includes(r.label)) label.appendChild(el("option", { value: r.label, text: r.label }));
     label.value = r.label || "object";
     label.addEventListener("change", () => upd({ label: label.value }));
-    const caption = el("textarea", { placeholder: "caption for the layout prompt (empty = not in the prompt)" });
+    const caption = rememberHeight(el("textarea", { placeholder: "caption for the layout prompt (empty = not in the prompt)" }), "boxCaption");
     caption.value = r.caption || "";
     caption.addEventListener("change", () => upd({ caption: caption.value }));
     const parts = [el("div", { class: "mrl-sec-title", text: "Layout prompt" }), this.field("Label", label), caption];

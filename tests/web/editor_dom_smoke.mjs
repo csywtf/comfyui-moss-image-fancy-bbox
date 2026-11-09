@@ -298,6 +298,15 @@ await page.mouse.move(tb.x + tb.width - 3, tb.y + tb.height + 57, { steps: 5 });
 await page.mouse.up();
 const grown = (await ta.boundingBox()).height;
 assert.ok(grown > tb.height + 30, `caption box resized: ${tb.height} -> ${grown}`);
+// ...and keeps that height when another layer is selected (the panel is rebuilt) and when coming back
+const layoutGrown = await page.locator(".mrl-props textarea").first().evaluate((e) => e.offsetHeight);
+const rows = page.locator(".mrl-layers .mrl-row");
+assert.ok((await rows.count()) >= 2);
+await rows.nth(1).click();
+assert.doesNotMatch(await propsTitle(), /Alice/);
+assert.equal(await page.locator(".mrl-props textarea").first().evaluate((e) => e.offsetHeight), layoutGrown);
+await page.locator(".mrl-layers .mrl-row", { hasText: "Alice" }).click();
+assert.equal(await page.locator(".mrl-props textarea").first().evaluate((e) => e.offsetHeight), layoutGrown);
 console.log("textarea resize ok");
 await page.locator(".mrl-lora-row input[type=number]").first().fill("1.5");
 await page.locator(".mrl-lora-row input[type=number]").first().press("Tab");
