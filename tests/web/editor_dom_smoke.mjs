@@ -90,6 +90,20 @@ window.addEventListener("keydown", (e) => {
   if (a && (a.tagName === "INPUT" || a.tagName === "TEXTAREA" || a.isContentEditable)) return;
   if ((e.ctrlKey || e.metaKey) && /^[zy]$/i.test(e.key)) window.__comfyUndo++;
 }, true);
+// its graph container also takes middle-button presses and drags in its capture phase, hands them to the
+// graph and stops them, unless their target is a focused text field
+window.__graphPan = 0;
+for (const type of ["pointerdown", "pointermove", "pointerup"]) {
+  document.getElementById("host").addEventListener(type, (e) => {
+    const middle = type === "pointermove" ? (e.buttons & 4) === 4 : e.button === 1 || e.buttons === 4;
+    if (!middle) return;
+    const t = e.target;
+    if ((t.tagName === "TEXTAREA" || t.tagName === "INPUT" || t.isContentEditable) && document.activeElement === t) return;
+    e.preventDefault();
+    e.stopPropagation();
+    window.__graphPan++;
+  }, true);
+}
 window.ready = true;
 </script></body></html>`;
 
@@ -453,9 +467,9 @@ await page.keyboard.press("0");
 assert.ok(Math.abs((await edView()).scale - v0.scale) < 1e-9);
 console.log("zoom/pan ok");
 if (process.argv[2]) await page.screenshot({ path: process.argv[2] });
-const comfy = await page.evaluate(() => ({ wheel: window.__graphWheel, undo: window.__comfyUndo }));
-assert.deepEqual(comfy, { wheel: 0, undo: 0 }, "ComfyUI's own wheel forwarding / undo never ran for editor input");
-console.log("comfyui wheel/undo stand-ins untouched ok");
+const comfy = await page.evaluate(() => ({ wheel: window.__graphWheel, undo: window.__comfyUndo, pan: window.__graphPan }));
+assert.deepEqual(comfy, { wheel: 0, undo: 0, pan: 0 }, "ComfyUI's own wheel / undo / middle-button forwarding never ran for editor input");
+console.log("comfyui wheel/undo/pan stand-ins untouched ok");
 assert.deepEqual(errors, []);
 console.log("PASS");
 await browser.close();

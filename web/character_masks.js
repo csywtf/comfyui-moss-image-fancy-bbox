@@ -137,6 +137,7 @@ class MasksEditor {
   destroy() {
     clearInterval(this.timer);
     this.ro?.disconnect();
+    this.panZoom?.dispose();
   }
 
   widget(name) {
@@ -205,7 +206,7 @@ class MasksEditor {
     });
     // keyboard focus ComfyUI leaves alone: its Ctrl+Z undo and wheel forwarding stand aside (see viewport.js)
     this.keys = installKeySink(this.root);
-    installPanZoom({
+    this.panZoom = installPanZoom({
       focus: () => this.keys.focus(),
       canvas: this.canvas,
       root: this.root,

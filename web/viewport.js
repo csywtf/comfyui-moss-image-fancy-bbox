@@ -73,7 +73,8 @@ export const zoomOutFactor = 1 / BUTTON_STEP;
  * Wire zoom and pan to an editor's canvas.
  * host: {canvas, root, viewport, size() -> {W, H, cw, ch}, handTool() -> bool, redraw(), cursor(c)}
  * The wheel zooms around the pointer; a drag with the hand tool, with Space held, or with the middle
- * button pans. Pan drags are taken before the editor's own pointer handlers (capture phase).
+ * button pans. Pan drags are taken before the editor's own pointer handlers (capture phase); middle-button
+ * drags at the window, before ComfyUI can hand them to the graph. Returns {panning, dispose()}.
  */
 export function installPanZoom(host) {
   const { canvas, root, viewport } = host;
@@ -102,16 +103,36 @@ export function installPanZoom(host) {
     },
     { passive: false },
   );
+  const startPan = (e) => {
+    e.preventDefault();
+    host.focus?.();
+    drag = { ...layout(e), id: e.pointerId };
+    canvas.setPointerCapture?.(e.pointerId);
+    host.cursor("grabbing");
+  };
+  const movePan = (e) => {
+    const p = layout(e);
+    const { W, H, cw, ch } = host.size();
+    viewport.panBy(p.x - drag.x, p.y - drag.y, W, H, cw, ch);
+    drag.x = p.x;
+    drag.y = p.y;
+    host.redraw();
+  };
+  const end = (e) => {
+    if (!drag) return;
+    e.stopImmediatePropagation();
+    try {
+      canvas.releasePointerCapture?.(drag.id);
+    } catch {}
+    drag = null;
+    host.cursor(space || host.handTool() ? "grab" : "");
+  };
   canvas.addEventListener(
     "pointerdown",
     (e) => {
       if (!panning(e)) return;
-      e.preventDefault();
       e.stopImmediatePropagation(); // the editor never sees a pan as a click
-      host.focus?.();
-      drag = { ...layout(e), id: e.pointerId };
-      canvas.setPointerCapture?.(e.pointerId);
-      host.cursor("grabbing");
+      startPan(e);
     },
     { capture: true },
   );
@@ -126,26 +147,34 @@ export function installPanZoom(host) {
         return;
       }
       e.stopImmediatePropagation();
-      const p = layout(e);
-      const { W, H, cw, ch } = host.size();
-      viewport.panBy(p.x - drag.x, p.y - drag.y, W, H, cw, ch);
-      drag.x = p.x;
-      drag.y = p.y;
-      host.redraw();
+      movePan(e);
     },
     { capture: true },
   );
-  const end = (e) => {
-    if (!drag) return;
-    e.stopImmediatePropagation();
-    try {
-      canvas.releasePointerCapture?.(drag.id);
-    } catch {}
-    drag = null;
-    host.cursor(space || host.handTool() ? "grab" : "");
-  };
   canvas.addEventListener("pointerup", end, { capture: true });
   canvas.addEventListener("pointercancel", end, { capture: true });
+  // ComfyUI's graph container takes middle-button presses in its capture phase and hands them to the graph
+  // (so a middle-drag over a node pans the graph), stopping them before they reach the editor. The window's
+  // capture phase comes first: a middle-drag that starts on this canvas is taken there and pans the editor.
+  const ours = (e) => e.target === canvas;
+  const winDown = (e) => {
+    if (e.button !== 1 || !ours(e)) return;
+    e.stopImmediatePropagation();
+    startPan(e);
+  };
+  const winMove = (e) => {
+    if (!drag || e.pointerId !== drag.id) return;
+    e.stopImmediatePropagation();
+    movePan(e);
+  };
+  const winEnd = (e) => {
+    if (drag && e.pointerId === drag.id) end(e);
+  };
+  const win = canvas.ownerDocument?.defaultView || window;
+  win.addEventListener("pointerdown", winDown, { capture: true });
+  win.addEventListener("pointermove", winMove, { capture: true });
+  win.addEventListener("pointerup", winEnd, { capture: true });
+  win.addEventListener("pointercancel", winEnd, { capture: true });
   canvas.addEventListener("auxclick", (e) => e.button === 1 && e.preventDefault()); // no middle-click paste/scroll
   const typing = (e) => /^(input|textarea|select)$/i.test(e.target?.tagName || "") && !isKeySink(e.target);
   root.addEventListener("keydown", (e) => {
@@ -164,7 +193,18 @@ export function installPanZoom(host) {
       if (!drag) host.cursor(host.handTool() ? "grab" : "");
     }
   });
-  return { get panning() { return !!drag; } };
+  return {
+    get panning() {
+      return !!drag;
+    },
+    /** Remove the window listeners (when the editor goes away). */
+    dispose() {
+      win.removeEventListener("pointerdown", winDown, { capture: true });
+      win.removeEventListener("pointermove", winMove, { capture: true });
+      win.removeEventListener("pointerup", winEnd, { capture: true });
+      win.removeEventListener("pointercancel", winEnd, { capture: true });
+    },
+  };
 }
 
 // ---------------------------------------------------------------------------------------------------

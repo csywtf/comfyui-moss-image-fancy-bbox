@@ -495,6 +495,26 @@ def test_label_map_and_preview():
     p = cm.render_preview(img, f)
     assert p.shape == (H, W, 3) and torch.allclose(p[95, 100], torch.tensor([0.2, 0.2, 0.2]))   # dimmed
     assert not torch.allclose(p[30, 40], img[30, 40])                                           # tinted
+    # a part is filled the same inside and outside the outlines, and over another box's outline
+    hand = torch.zeros(H, W, dtype=torch.bool)
+    hand[80:98, 40:60] = True                                          # from inside her outline to below it
+    f.boxes[0].parts["left_hand"] = hand
+    p = cm.render_preview(img, f)
+    frame_lines = torch.zeros(H, W, dtype=torch.bool)                  # the box frames are drawn on top
+    for bx in f.boxes:
+        x0, y0, x1, y1 = bx.rect
+        frame_lines[y0, x0:x1] = frame_lines[y1 - 1, x0:x1] = True
+        frame_lines[y0:y1, x0] = frame_lines[y0:y1, x1 - 1] = True
+    shown = hand & ~frame_lines
+    colours = {tuple(round(float(v), 4) for v in p[y, x]) for y, x in zip(*torch.nonzero(shown, as_tuple=True))}
+    assert len(colours) == 1, colours
+    assert f.boxes[0].outline[shown].any() and (~f.boxes[0].outline[shown]).any()   # inside and outside
+    # finer parts on top: eyes over face
+    face_eyes = f.boxes[0].parts["eyes"] & f.boxes[0].parts["face"]
+    if face_eyes.any():
+        y, x = map(int, torch.nonzero(face_eyes)[0])
+        eye = torch.tensor(cm._rgb(cm.PART_BY_NAME["eyes"].color))
+        assert torch.allclose(p[y, x], img[y, x] * 0.25 + eye * 0.75)
 
 
 def test_node_outputs_and_editor_payload(fake_sam3, monkeypatch, tmp_path):
