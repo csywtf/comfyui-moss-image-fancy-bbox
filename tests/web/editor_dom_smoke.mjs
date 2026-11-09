@@ -72,6 +72,24 @@ Node.prototype.configure = function (info) { this.configuredWith = info.widgets_
 await ext.beforeRegisterNodeDef(Node, { name: "MossRegionalLora" });
 window.node = new Node();
 window.node.onNodeCreated();
+// ComfyUI stand-ins (frontend 1.58): its node container forwards the wheel to the graph unless the pointer
+// is over a [data-capture-wheel="true"] element holding the focus; its change tracker runs the workflow undo
+// for Ctrl+Z / Ctrl+Y from a window capture listener unless a text field has the focus.
+window.__graphWheel = 0;
+window.__comfyUndo = 0;
+document.getElementById("host").addEventListener("wheel", (e) => {
+  const t = e.target.closest?.('[data-capture-wheel="true"]');
+  const a = document.activeElement;
+  if (t && a && t.contains(a)) return;
+  e.preventDefault();
+  e.stopPropagation();
+  window.__graphWheel++;
+}, { capture: true, passive: false });
+window.addEventListener("keydown", (e) => {
+  const a = document.activeElement;
+  if (a && (a.tagName === "INPUT" || a.tagName === "TEXTAREA" || a.isContentEditable)) return;
+  if ((e.ctrlKey || e.metaKey) && /^[zy]$/i.test(e.key)) window.__comfyUndo++;
+}, true);
 window.ready = true;
 </script></body></html>`;
 
@@ -103,6 +121,14 @@ const errors = [];
 page.on("pageerror", (e) => errors.push(String(e)));
 await page.goto(base);
 await page.waitForFunction(() => window.ready === true);
+// as a user would: click away (graph focused), then move the pointer onto the editor's canvas
+async function hoverCanvas() {
+  await page.evaluate(() => document.activeElement?.blur?.());
+  const vs = page.viewportSize();
+  await page.mouse.move(vs.width - 2, vs.height - 2);
+  const b = await page.locator(".mrl-canvas-wrap canvas").boundingBox();
+  await page.mouse.move(b.x + 6, b.y + b.height - 6);
+}
 const json = async () => JSON.parse(await page.locator("#raw").inputValue());
 const propsTitle = () => page.locator(".mrl-props .mrl-panel-head").innerText();
 
@@ -327,7 +353,7 @@ await page.locator("#raw").fill(broken);
 await page.waitForFunction(() => getComputedStyle(document.querySelector(".mrl-error")).display !== "none", null, { timeout: 2000 });
 await page.locator(".mrl-tools button").nth(1).click();
 await drag([100, 100], [300, 300]);
-await page.locator(".mrl-canvas-wrap canvas").focus();
+await hoverCanvas();
 await page.keyboard.press("Delete");
 await page.keyboard.press("Control+z");
 assert.equal(await page.locator("#raw").inputValue(), broken);
@@ -361,6 +387,7 @@ async function imgToScreen(x, y) {
     return { x: r.left + v.ox + x * v.scale, y: r.top + v.oy + y * v.scale };
   }, [x, y, v]);
 }
+await hoverCanvas();                                                                       // focus: click away, hover
 const v0 = await edView();
 let q0 = await imgToScreen(700, 300);
 await page.mouse.move(q0.x, q0.y);
@@ -379,7 +406,7 @@ async function dragBy(dx, dy, opts = {}) {
   await page.mouse.move(x + dx, y + dy, { steps: 4 });
   await page.mouse.up(opts);
 }
-await page.locator(".mrl-canvas-wrap canvas").focus();
+await hoverCanvas();
 await page.keyboard.press("h");
 let a0 = await edView();
 await dragBy(60, 25);
@@ -406,6 +433,9 @@ await page.keyboard.press("0");
 assert.ok(Math.abs((await edView()).scale - v0.scale) < 1e-9);
 console.log("zoom/pan ok");
 if (process.argv[2]) await page.screenshot({ path: process.argv[2] });
+const comfy = await page.evaluate(() => ({ wheel: window.__graphWheel, undo: window.__comfyUndo }));
+assert.deepEqual(comfy, { wheel: 0, undo: 0 }, "ComfyUI's own wheel forwarding / undo never ran for editor input");
+console.log("comfyui wheel/undo stand-ins untouched ok");
 assert.deepEqual(errors, []);
 console.log("PASS");
 await browser.close();

@@ -13,7 +13,7 @@ import * as G from "./geometry.js";
 import * as S from "./state.js";
 import * as D from "./detail_state.js";
 import { el, hideWidget, injectCss, loraDisplayName, loraList, zoomButtons, zoomKey } from "./regional_lora_editor.js";
-import { Viewport, installPanZoom } from "./viewport.js";
+import { Viewport, frameRect, installKeySink, installPanZoom, isKeySink, trackSize } from "./viewport.js";
 import * as P from "./paint.js";
 
 // Tools in the floating toolbar: {id, icon (a name in icons.js), key, title}.
@@ -123,8 +123,9 @@ class MasksEditor {
       this.renderProps();
     });
     this.timer = setInterval(() => this.poll(), POLL_MS);
-    this.ro = new ResizeObserver(() => this.draw());
-    this.ro.observe(this.wrap);
+    this.wrapSize = trackSize(this.wrap, () => this.draw());
+    this.ro = this.wrapSize.ro;
+    this.canvasRect = frameRect(this.canvas);
     this.poll();
   }
 
@@ -150,7 +151,7 @@ class MasksEditor {
   build() {
     this.list = el("div", { class: "mrl-panel-body" });
     const boxes = el("div", { class: "mrl-panel mcm-boxes" }, [el("div", { class: "mrl-panel-head", text: "Boxes" }), this.list]);
-    this.canvas = el("canvas", { tabindex: "0" }); // focusable, so tool and zoom keys work after a click
+    this.canvas = el("canvas");
     this.toolButtons = {};
     const tools = el("div", { class: "mrl-tools" }, [
       ...TOOLS.map((t) => (this.toolButtons[t.id] = el("button", { icon: t.icon, iconSize: 16, title: t.title, onclick: () => this.setTool(t.id) }))),
@@ -172,12 +173,12 @@ class MasksEditor {
     this.canvas.addEventListener("pointercancel", (e) => this.onCanvasUp(e));
     this.canvas.addEventListener("pointerleave", () => {
       this.hover = null;
-      this.draw();
+      this.requestDraw();
     });
     this.root.addEventListener("pointerdown", (e) => e.stopPropagation());
     this.root.addEventListener("keydown", (e) => {
       e.stopPropagation(); // typing here isn't a graph shortcut
-      if (/^(input|textarea|select)$/i.test(e.target?.tagName || "")) return;
+      if (/^(input|textarea|select)$/i.test(e.target?.tagName || "") && !isKeySink(e.target)) return;
       if ((e.ctrlKey || e.metaKey) && /^[zZyY]$/.test(e.key)) {
         e.preventDefault();
         return e.key.toLowerCase() === "y" || e.shiftKey ? this.redo() : this.undo();
@@ -192,7 +193,10 @@ class MasksEditor {
       const tool = TOOLS.find((t) => t.key === e.key.toLowerCase());
       if (tool) this.setTool(tool.id);
     });
+    // keyboard focus ComfyUI leaves alone: its Ctrl+Z undo and wheel forwarding stand aside (see viewport.js)
+    this.keys = installKeySink(this.root);
     installPanZoom({
+      focus: () => this.keys.focus(),
       canvas: this.canvas,
       root: this.root,
       viewport: this.viewport,
@@ -291,11 +295,24 @@ class MasksEditor {
     } else P.apply(L.add, mask, add ? 1 : 0);
   }
 
+  /** A brush segment straight into the layers (no full-size temporaries), then only that patch of the
+   * overlay is redrawn. */
   stampPaint(L, x0, y0, x1, y1, add) {
-    const m = P.blank(L.add.w, L.add.h);
-    P.strokeLine(m, x0, y0, x1, y1, this.brush, 1);
-    this.applyPaint(L, m, add);
-    this.paintCanvas = null;
+    const r = this.brush;
+    if (L.sub) {
+      P.strokeLine(add ? L.add : L.sub, x0, y0, x1, y1, r, 1);
+      P.strokeLine(add ? L.sub : L.add, x0, y0, x1, y1, r, 0);
+    } else P.strokeLine(L.add, x0, y0, x1, y1, r, add ? 1 : 0);
+    if (this.paintCanvas && this.paintFor === L) this.updatePaintRect(P.strokeBounds(L.add, x0, y0, x1, y1, r));
+    else this.paintCanvas = null;
+  }
+
+  requestDraw() {
+    if (this._raf) return;
+    this._raf = requestAnimationFrame(() => {
+      this._raf = 0;
+      this.draw();
+    });
   }
 
   /** Store the painted layers in the settings (one undo step). */
@@ -319,6 +336,7 @@ class MasksEditor {
     this.layers = null;
     this.paintCanvas = null;
     this.poll();
+    this.draw(); // show the result now, whatever else is going on
   }
 
   undo() {
@@ -345,25 +363,42 @@ class MasksEditor {
     if (!L) return null;
     const { w, h } = L.add;
     const d = this.doc();
-    const prot = L.key === "protect" || !d.ok ? null : P.decode(D.protectOf(d.doc), w, h);
-    const px = new Uint8ClampedArray(w * h * 4);
-    const isProtect = L.key === "protect";
-    for (let y = 0, i = 0; y < h; y++) {
-      for (let x = 0; x < w; x++, i++) {
-        const o = i * 4;
-        const stripe = (x + y) % 8 < 3;
-        if (L.add.bits[i]) {
-          if (isProtect) px.set([150, 150, 150, stripe ? 230 : 110], o);
-          else px.set([255, 255, 255, 120], o);
-        } else if (L.sub?.bits[i]) px.set([255, 59, 48, stripe ? 220 : 90], o);
-        else if (prot?.bits[i] && stripe) px.set([150, 150, 150, 120], o);
-      }
-    }
+    this.paintProtect = L.key === "protect" || !d.ok ? null : P.decode(D.protectOf(d.doc), w, h);
     const c = document.createElement("canvas");
     c.width = w;
     c.height = h;
-    c.getContext("2d").putImageData(new ImageData(px, w, h), 0, 0);
+    this.paintCtx = c.getContext("2d");
+    this.paintImg = this.paintCtx.createImageData(w, h);
+    this.paintFor = L;
+    this.paintCanvas = c;
+    this.updatePaintRect({ x0: 0, y0: 0, x1: w, y1: h });
     return c;
+  }
+
+  /** Recolour the overlay inside a rectangle: added pixels white, removed red stripes, Protect grey stripes. */
+  updatePaintRect({ x0, y0, x1, y1 }) {
+    const L = this.paintFor;
+    const prot = this.paintProtect;
+    const isProtect = L.key === "protect";
+    const w = L.add.w;
+    const px = this.paintImg.data;
+    for (let y = y0; y < y1; y++) {
+      for (let x = x0, i = y * w + x0; x < x1; x++, i++) {
+        const o = i * 4;
+        const stripe = (x + y) % 8 < 3;
+        let r = 0, g = 0, b = 0, a = 0;
+        if (L.add.bits[i]) {
+          if (isProtect) [r, g, b, a] = [150, 150, 150, stripe ? 230 : 110];
+          else [r, g, b, a] = [255, 255, 255, 120];
+        } else if (L.sub && L.sub.bits[i]) [r, g, b, a] = [255, 59, 48, stripe ? 220 : 90];
+        else if (prot && prot.bits[i] && stripe) [r, g, b, a] = [150, 150, 150, 120];
+        px[o] = r;
+        px[o + 1] = g;
+        px[o + 2] = b;
+        px[o + 3] = a;
+      }
+    }
+    if (x1 > x0 && y1 > y0) this.paintCtx.putImageData(this.paintImg, 0, 0, x0, y0, x1 - x0, y1 - y0);
   }
 
   renderTools() {
@@ -393,8 +428,15 @@ class MasksEditor {
     return S.emittedRegions(src.state).map((r) => ({ region: r, color: S.regionColor(src.state, src.state.regions.indexOf(r)) }));
   }
 
+  /** The parsed detail settings, re-parsed only when the widget's text changes (it holds the paint too,
+   * so it can be large, and this is called many times per redraw). */
   doc() {
-    return D.parseDetail(this.widget("detail")?.value);
+    const text = this.widget("detail")?.value;
+    if (text !== this._docText || !this._doc) {
+      this._docText = text;
+      this._doc = D.parseDetail(text);
+    }
+    return this._doc;
   }
 
   detailOf(region) {
@@ -420,7 +462,12 @@ class MasksEditor {
     this.src = this.source();
     const a = document.activeElement;
     const typing = this.props.contains(a) && (a.tagName === "TEXTAREA" || (a.tagName === "INPUT" && /^(text|number)$/.test(a.type)));
-    const sig = [this.src?.text, this.src?.W, this.src?.H, this.widget("detail")?.value, ...SETTINGS.map(([n]) => this.widget(n)?.value)].join("\u0001");
+    const detailText = this.widget("detail")?.value;
+    if (detailText !== this._sigDetail) {
+      this._sigDetail = detailText; // compared, never joined: with paint it can be large
+      this._detailVersion = (this._detailVersion || 0) + 1;
+    }
+    const sig = [this.src?.text, this.src?.W, this.src?.H, this._detailVersion, ...SETTINGS.map(([n]) => this.widget(n)?.value)].join("\u0001");
     if (sig === this.sig) return;
     this.sig = sig;
     this.renderList();
@@ -649,7 +696,7 @@ class MasksEditor {
   view() {
     const W = this.result?.width || this.src?.W || 1024;
     const H = this.result?.height || this.src?.H || 1024;
-    const v = this.viewport.view(W, H, this.wrap.clientWidth, this.wrap.clientHeight);
+    const v = this.viewport.view(W, H, this.wrapSize.w, this.wrapSize.h);
     return { ...v, s: v.scale };
   }
 
@@ -657,9 +704,9 @@ class MasksEditor {
    * normalised back to layout px first. */
   eventPoint(e) {
     const v = this.view();
-    const r = this.canvas.getBoundingClientRect();
-    const sx = r.width ? this.canvas.clientWidth / r.width : 1;
-    const sy = r.height ? this.canvas.clientHeight / r.height : 1;
+    const { rect: r, cw, ch } = this.canvasRect();
+    const sx = r.width ? cw / r.width : 1;
+    const sy = r.height ? ch / r.height : 1;
     return { x: ((e.clientX - r.left) * sx - v.ox) / v.s, y: ((e.clientY - r.top) * sy - v.oy) / v.s, v };
   }
 
@@ -673,7 +720,7 @@ class MasksEditor {
         this.stroke.x = x;
         this.stroke.y = y;
       }
-      this.draw();
+      this.requestDraw();
     }
   }
 
@@ -731,10 +778,12 @@ class MasksEditor {
     if (!this.root.isConnected) return;
     const v = this.view();
     const dpr = window.devicePixelRatio || 1;
-    this.canvas.width = Math.max(1, Math.round(v.cw * dpr));
-    this.canvas.height = Math.max(1, Math.round(v.ch * dpr));
-    this.canvas.style.width = `${v.cw}px`;
-    this.canvas.style.height = `${v.ch}px`;
+    // resizing a canvas reallocates it: only when the size really changes
+    const pw = Math.max(1, Math.round(v.cw * dpr)), ph = Math.max(1, Math.round(v.ch * dpr));
+    if (this.canvas.width !== pw) this.canvas.width = pw;
+    if (this.canvas.height !== ph) this.canvas.height = ph;
+    if (this.canvas.style.width !== `${v.cw}px`) this.canvas.style.width = `${v.cw}px`;
+    if (this.canvas.style.height !== `${v.ch}px`) this.canvas.style.height = `${v.ch}px`;
     const g = this.canvas.getContext("2d");
     g.setTransform(dpr, 0, 0, dpr, 0, 0);
     g.clearRect(0, 0, v.cw, v.ch);
@@ -770,7 +819,7 @@ class MasksEditor {
       }
     }
     if (PAINT_TOOLS.includes(this.tool) || this.paintTarget === "protect") {
-      this.paintCanvas = this.paintCanvas || this.buildPaintCanvas();
+      if (!this.paintCanvas || this.paintFor !== this.paintLayers()) this.buildPaintCanvas();
       if (this.paintCanvas) {
         g.imageSmoothingEnabled = false;
         g.drawImage(this.paintCanvas, v.ox, v.oy, v.W * v.s, v.H * v.s);
@@ -787,7 +836,7 @@ class MasksEditor {
   }
 
   onCanvasDown(e) {
-    this.canvas.focus();
+    this.keys.focus();
     const { x, y, v } = this.eventPoint(e);
     if (this.paintDown(e, x, y)) return e.preventDefault();
     let hit = null;
