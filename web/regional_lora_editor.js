@@ -104,6 +104,7 @@ const CSS = `
 .mrl-field>span:first-child{flex:0 0 76px;opacity:.75}
 .mrl-field input[type=text],.mrl-field select,.mrl-props textarea{flex:1;min-width:0;background:var(--comfy-input-bg,#222);color:inherit;border:1px solid var(--border-color,#555);border-radius:3px}
 .mrl-props textarea{min-height:44px;resize:vertical;font:12px sans-serif}
+.mrl-sec>textarea{flex:none}
 .mrl-bbox-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:3px}
 .mrl-bbox-grid label{display:flex;flex-direction:column;font-size:10px;opacity:.85}
 .mrl-bbox-grid input{width:100%;box-sizing:border-box}

@@ -291,7 +291,7 @@ await strokeImg([[120, 60], [170, 60]]);                                        
 d = await detail();
 let add = layer(d.boxes.alice.paint.character.add);
 assert.ok(bit(add, 120, 60) && bit(add, 145, 60) && bit(add, 170, 60) && !bit(add, 145, 70));
-await page.keyboard.press("e");
+await page.keyboard.press("n");                                                             // remove brush
 await strokeImg([[140, 60], [150, 60]]);
 d = await detail();
 add = layer(d.boxes.alice.paint.character.add);
@@ -301,6 +301,20 @@ await page.keyboard.press("Control+z");
 assert.equal((await detail()).boxes.alice.paint.character.sub, null);                     // undone
 await page.keyboard.press("Control+Shift+z");
 assert.ok((await detail()).boxes.alice.paint.character.sub);                               // redone
+// the eraser wipes add and remove paint alike, back to SAM3's result; elsewhere both stay
+await page.keyboard.press("e");
+assert.equal(await page.evaluate(() => window.node.__mcmEditor.tool), "erase");
+await strokeImg([[143, 60], [147, 60]]);                                                    // remove paint
+await strokeImg([[122, 60], [126, 60]]);                                                    // add paint
+d = await detail();
+let addE = layer(d.boxes.alice.paint.character.add), subE = layer(d.boxes.alice.paint.character.sub);
+assert.ok(!bit(addE, 145, 60) && !bit(subE, 145, 60) && !bit(addE, 124, 60) && !bit(subE, 124, 60));
+assert.ok(bit(addE, 165, 60));                                                              // untouched add paint
+await page.keyboard.press("Control+z");                                                     // one undo per stroke
+d = await detail();
+assert.ok(bit(layer(d.boxes.alice.paint.character.add), 124, 60));
+await page.keyboard.press("Control+z");
+assert.ok(bit(layer((await detail()).boxes.alice.paint.character.sub), 145, 60));
 await page.locator(".mcm-opts select").selectOption("right_hand");
 await tool("Add brush");
 await strokeImg([[30, 80], [40, 80]]);

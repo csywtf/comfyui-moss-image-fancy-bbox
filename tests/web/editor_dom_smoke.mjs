@@ -288,6 +288,17 @@ assert.ok((await page.locator(".mrl-root svg.mrl-icon").count()) > 10); // Lucid
 await page.locator(".mrl-props textarea").fill("a tall woman");
 await page.locator(".mrl-props textarea").press("Tab");
 assert.equal((await json()).regions[0].caption, "a tall woman");
+// the caption box can be resized by its corner handle (it sits in a flex column: flex must not pin its height)
+const ta = page.locator(".mrl-props textarea").first();
+await ta.scrollIntoViewIfNeeded();
+const tb = await ta.boundingBox();
+await page.mouse.move(tb.x + tb.width - 3, tb.y + tb.height - 3);
+await page.mouse.down();
+await page.mouse.move(tb.x + tb.width - 3, tb.y + tb.height + 57, { steps: 5 });
+await page.mouse.up();
+const grown = (await ta.boundingBox()).height;
+assert.ok(grown > tb.height + 30, `caption box resized: ${tb.height} -> ${grown}`);
+console.log("textarea resize ok");
 await page.locator(".mrl-lora-row input[type=number]").first().fill("1.5");
 await page.locator(".mrl-lora-row input[type=number]").first().press("Tab");
 s = await json();
