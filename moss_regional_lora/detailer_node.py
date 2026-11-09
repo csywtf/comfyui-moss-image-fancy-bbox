@@ -6,7 +6,7 @@ import logging
 import os
 from collections import OrderedDict
 
-from .detailer import count_passes, detail, needs_reference
+from .detailer import count_passes, describe_pass, detail, needs_reference
 
 log = logging.getLogger("moss_regional_lora")
 
@@ -80,6 +80,9 @@ class _Sampler:
                     patches = comfy.lora.load_lora(comfy.lora_convert.convert_lora(_raw_lora(name)), self._key_map())
                     if not patches:
                         log.warning("[MOSS Regional Detailer] no layer of the model matched %s; it has no effect", name)
+                    else:
+                        log.info("[MOSS Regional Detailer] LoRA %s at %.2f: %d layers patched", name, weight,
+                                 len(patches))
                     m.add_patches(patches, weight)
                 self._models[loras] = m
         return self._models[loras]
@@ -175,7 +178,7 @@ class MossRegionalDetailer:
                            reference=needs_reference(character_masks, denoise, restore_detail))
 
         def on_pass(k, p):
-            log.info("[MOSS Regional Detailer] %d/%d: %s %s (denoise %.2f)", k + 1, total, p.box, p.part, p.denoise)
+            log.info("[MOSS Regional Detailer] %d/%d: %s", k + 1, total, describe_pass(p))
             bar.update(1)
 
         out = detail(image, character_masks, sampler, denoise=denoise, crop_size=crop_size, padding=padding,

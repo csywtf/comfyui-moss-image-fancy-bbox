@@ -50,6 +50,11 @@ def test_plan_order_prompts_loras_and_denoise():
     assert bob_face.loras == ()                                           # box LoRAs turned off
     assert (eyes.denoise, face.denoise, skin.denoise) == (0.6, 0.35, 0.35)
     assert dt.count_passes(two_characters(), 0.35) == 4
+    line = dt.describe_pass(eyes)
+    assert line.startswith("alice eyes (denoise 0.60;")
+    assert "LoRAs: alice.safetensors 0.8, eye_detail.safetensors 0.5" in line
+    assert line.endswith("prompt: a tall woman, green eyes, detailed eyes)")
+    assert "LoRAs: none" in dt.describe_pass(bob_face)
 
 
 # ------------------------------------------------------------------------- geometry
