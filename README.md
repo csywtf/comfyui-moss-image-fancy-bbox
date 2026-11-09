@@ -259,8 +259,12 @@ they re-run only this node, not the image.
   the others faint. Click a character to select its box.
 - **Detail** (right, for the selected box): Detail on/off; a detail prompt added to every part's prompt
   (a trigger word, "green eyes"); whether to use the box's own LoRAs; detail-only LoRAs; and per part a
-  checkbox, a prompt (empty: "detailed face" and so on) and a denoise (empty: the detailer's default),
-  with "found" / "not found" after a run. With no box selected: SAM3's threshold, box margin and
+  checkbox, a prompt (empty: "detailed face" and so on), a denoise and a detail restore (both empty:
+  the detailer's defaults), with "found" / "not found" after a run. Hands are two parts, **left hand**
+  and **right hand**, as seen in the image, each with its own settings: with two or more hands found,
+  the leftmost is the left one and the rightmost the right one (others join the nearer); where they
+  touch, the shared pixels are split at the midpoint between them; a single hand is left or right of
+  the character's middle. Settings saved for "hands" before the split apply to both. With no box selected: SAM3's threshold, box margin and
   refinement passes.
 
 Characters start with face and eyes on; other labels start off. The settings are stored on this node,
@@ -298,13 +302,15 @@ fine (skin, hair, face, hands, eyes), each as its own pass on the image so far:
 2. **Re-sample** it with a noise mask, so only the part changes. Prompt: the box's caption, the box's
    detail prompt and the part's prompt (empty: "detailed face" and so on), all set in the Character Masks
    editor. LoRAs: the box's own (unless *Box LoRAs* is off) plus its detail-only LoRAs, applied to the
-   model only, as the main node does. Denoise: the part's own, or the node's `denoise` (0.35). Seed:
+   model only, as the main node does, and matched to the model's layers the same way the main node
+   matches them (so a LoRA that works there works here; a LoRA that matches no layer is logged). Denoise: the part's own, or the node's `denoise` (0.35). Seed:
    `seed` plus the pass number.
 3. **Scale back** by area averaging (exact for a whole-number upscale) and **restore detail**: the crop
    is also decoded without being redrawn, and what that round trip lost (resizing, VAE) is added back, so
    only the model's changes are kept on top of the original's fine detail. At denoise 0 the image comes
-   back unchanged. `restore_detail` (advanced, default 1) scales this; lower it if a high denoise leaves
-   faint traces of the old features.
+   back unchanged. `restore_detail` (advanced, default 1) scales this, and each part can set its own in
+   the Character Masks editor: keep it at 1 to refine a part, and use 0 (with a higher denoise, ~0.65)
+   to change its style, e.g. a hand that was generated in the other character's style.
 4. **Blend** it back with the feathered mask. Pixels outside every part's feathered mask are untouched,
    bit for bit.
 

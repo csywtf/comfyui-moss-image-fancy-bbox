@@ -32,9 +32,9 @@ def two_characters():
                       caption="a tall woman", loras=[("alice.safetensors", 0.8)],
                       detail={"prompt": "green eyes", "loras": [{"lora": "eye_detail.safetensors", "weight": 0.5}],
                               "parts": {"eyes": {"denoise": 0.6}, "face": {"prompt": "smiling"}, "skin": {"on": True}}})
-    bob = character("bob", {"face": (200, 30, 240, 80), "hands": (210, 150, 230, 170)},
-                    detail={"use_box_loras": False, "parts": {"hands": {"on": True}}}, loras=[("bob.safetensors", 1.0)])
-    bob.parts["hands"] = torch.zeros(H, W, dtype=torch.bool)       # not found: skipped
+    bob = character("bob", {"face": (200, 30, 240, 80), "left_hand": (210, 150, 230, 170)},
+                    detail={"use_box_loras": False, "parts": {"left_hand": {"on": True}}}, loras=[("bob.safetensors", 1.0)])
+    bob.parts["left_hand"] = torch.zeros(H, W, dtype=torch.bool)   # not found: skipped
     return cm.CharacterMasks([cm.FrameMasks(W, H, [alice, bob])])
 
 
@@ -196,6 +196,31 @@ class FakeClip:
         return [[f"cond:{tokens}", {}]]
 
 
+class FakeDM(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.lin = torch.nn.Linear(2, 2)
+
+
+class FakeModel:
+    """A ModelPatcher stand-in: clone() and add_patches() record the patches applied."""
+
+    def __init__(self, patches=()):
+        self.patches = list(patches)
+        self.model = types.SimpleNamespace()
+
+    def get_model_object(self, name):
+        assert name == "diffusion_model"
+        return FakeDM()
+
+    def clone(self):
+        return FakeModel(self.patches)
+
+    def add_patches(self, patches, strength_patch=1.0):
+        self.patches.append((dict(patches), strength_patch))
+        return list(patches)
+
+
 @pytest.fixture
 def fake_comfy(monkeypatch, tmp_path):
     calls = {"ksampler": [], "lora": [], "loaded": []}
@@ -207,26 +232,35 @@ def fake_comfy(monkeypatch, tmp_path):
                                   "denoise": denoise})
         return ({"samples": torch.full_like(latent["samples"], 0.9)},)
 
-    def load_lora_for_models(model, clip, lora, strength_model, strength_clip):
-        assert clip is None and strength_clip == 0
-        calls["lora"].append((lora["name"], strength_model))
-        return f"{model}+{lora['name']}@{strength_model}", None
+    def load_lora(sd, key_map):
+        """ComfyUI's load_lora: patches for the LoRA keys the key map resolves."""
+        calls["lora"].append(sd["name"])
+        return {key_map[p]: f"patch:{sd['name']}" for p in key_map
+                if any(k.startswith(p + ".") for k in sd if k != "name")}
 
-    for f in ("alice.safetensors", "bob.safetensors", "eye_detail.safetensors"):
+    for f in ("alice.safetensors", "bob.safetensors", "eye_detail.safetensors", "other_model.safetensors"):
         (tmp_path / f).write_bytes(b"x")
+
+    def raw_lora(path):
+        name = path.split("/")[-1]
+        layer = "unet_only.layer" if name == "other_model.safetensors" else "transformer.lin"   # diffusers-style names
+        return {"name": name, f"{layer}.lora_down.weight": 0, f"{layer}.lora_up.weight": 0}
     mods = {
         "nodes": types.SimpleNamespace(common_ksampler=common_ksampler),
         "comfy": types.ModuleType("comfy"),
-        "comfy.sd": types.SimpleNamespace(load_lora_for_models=load_lora_for_models),
+        # ComfyUI's own key map doesn't know "transformer." names; the main node's adds them
+        "comfy.lora": types.SimpleNamespace(load_lora=load_lora, model_lora_keys_unet=lambda model, km: km),
+        "comfy.lora_convert": types.SimpleNamespace(convert_lora=lambda sd: sd),
         "comfy.utils": types.SimpleNamespace(
-            load_torch_file=lambda path, safe_load=True: calls["loaded"].append(path) or {"name": path.split("/")[-1]},
+            load_torch_file=lambda path, safe_load=True: calls["loaded"].append(path) or raw_lora(path),
             ProgressBar=lambda total: types.SimpleNamespace(update=lambda n: None)),
         "folder_paths": types.SimpleNamespace(get_full_path_or_raise=lambda folder, name: str(tmp_path / name)),
         "comfy_execution": types.ModuleType("comfy_execution"),
         "comfy_execution.graph_utils": types.SimpleNamespace(ExecutionBlocker=type("ExecutionBlocker", (), {
             "__init__": lambda self, message: setattr(self, "message", message)})),
     }
-    mods["comfy"].sd, mods["comfy"].utils = mods["comfy.sd"], mods["comfy.utils"]
+    mods["comfy"].lora, mods["comfy"].utils = mods["comfy.lora"], mods["comfy.utils"]
+    mods["comfy"].lora_convert = mods["comfy.lora_convert"]
     for k, v in mods.items():
         monkeypatch.setitem(sys.modules, k, v)
     from moss_regional_lora import detailer_node
@@ -235,7 +269,7 @@ def fake_comfy(monkeypatch, tmp_path):
 
 
 def run_node(node_mod, masks, **kw):
-    args = dict(image=torch.rand(1, H, W, 3), character_masks=masks, model="base", clip=FakeClip(), vae=FakeVAE(),
+    args = dict(image=torch.rand(1, H, W, 3), character_masks=masks, model=FakeModel(), clip=FakeClip(), vae=FakeVAE(),
                 seed=5, steps=12, cfg=4.5, sampler_name="euler", scheduler="simple", denoise=0.35, crop_size=256,
                 padding=0.3, mask_grow=4, feather=8, stop_before_detailing=False)
     args.update(kw)
@@ -250,9 +284,12 @@ def test_node_samples_each_part_with_its_loras_prompt_and_negative(fake_comfy):
     assert len(ks) == 4 and [k["seed"] for k in ks] == [5, 6, 7, 8]
     assert all(k["negative"] == "NEG" and k["steps"] == 12 and k["cfg"] == 4.5 for k in ks)
     assert ks[2]["positive"] == [["cond:a tall woman, green eyes, detailed eyes", {}]] and ks[2]["denoise"] == 0.6
-    assert ks[0]["model"] == "base+alice.safetensors@0.8+eye_detail.safetensors@0.5"   # alice: box + detail LoRAs
-    assert ks[3]["model"] == "base"                                                       # bob: box LoRAs off
-    assert calls["lora"] == [("alice.safetensors", 0.8), ("eye_detail.safetensors", 0.5)]   # patched once, reused
+    # alice: box + detail LoRAs, matched through the main node's key map ("transformer.lin" -> the layer)
+    assert ks[0]["model"].patches == [({"diffusion_model.lin.weight": "patch:alice.safetensors"}, 0.8),
+                                      ({"diffusion_model.lin.weight": "patch:eye_detail.safetensors"}, 0.5)]
+    assert ks[0]["model"] is ks[1]["model"] and ks[3]["model"] is args["model"]     # bob: box LoRAs off
+    assert calls["lora"] == ["alice.safetensors", "eye_detail.safetensors"]          # patched once, reused
+    assert args["model"].patches == []                                                # the input isn't touched
     for k in ks:                                                    # noise mask at pixel size, latent 1/16
         _, _, mh, mw = k["mask"]
         assert k["latent"][2:] == (mh // 16, mw // 16)
@@ -317,12 +354,12 @@ def test_split_mask_far_apart_pieces_and_near_ones():
 
 
 def test_hands_far_apart_get_their_own_passes_and_upscaled_crops():
-    bob = character("bob", {"hands": (10, 150, 30, 170)}, detail={"parts": {"face": {"on": False}, "eyes": {"on": False},
-                                                                            "hands": {"on": True}}})
-    bob.parts["hands"] = rect_mask(10, 150, 30, 170) | rect_mask(260, 20, 280, 40)
+    bob = character("bob", {"left_hand": (10, 150, 30, 170)},
+                    detail={"parts": {"face": {"on": False}, "eyes": {"on": False}, "left_hand": {"on": True}}})
+    bob.parts["left_hand"] = rect_mask(10, 150, 30, 170) | rect_mask(260, 20, 280, 40)     # (a wide split mask)
     masks = cm.CharacterMasks([cm.FrameMasks(W, H, [bob])])
     passes = list(dt.plan(masks, 0.35, 0.3, 64, 12))
-    assert [(p.part, int(p.mask.sum())) for p in passes] == [("hands", 400), ("hands", 400)]
+    assert [(p.part, int(p.mask.sum())) for p in passes] == [("left_hand", 400), ("left_hand", 400)]
     assert dt.count_passes(masks, 0.35, 0.3, 64, 12) == 2
     s = FakeSampler()
     img = torch.rand(1, H, W, 3)
@@ -332,3 +369,34 @@ def test_hands_far_apart_get_their_own_passes_and_upscaled_crops():
         assert max(c["shape"][:2]) <= 256 + 15 and min(c["shape"][:2]) >= 2 * 64
     assert torch.allclose(out[0, 160, 20], torch.full((3,), 0.2))               # second pass: the lower hand
     assert torch.allclose(out[0, 30, 270], torch.full((3,), 0.1))
+
+
+
+def test_node_warns_when_a_lora_matches_no_layer(fake_comfy, caplog):
+    node_mod, calls = fake_comfy
+    alice = character("alice", {"face": (30, 30, 70, 80)}, loras=[("other_model.safetensors", 1.0)])
+    masks = cm.CharacterMasks([cm.FrameMasks(W, H, [alice])])
+    run_node(node_mod, masks)
+    assert "no layer of the model matched other_model.safetensors" in caplog.text
+
+
+def test_per_part_restore_overrides_the_node_default():
+    alice = character("alice", {"face": (30, 30, 70, 80), "right_hand": (200, 140, 230, 170)},
+                      detail={"parts": {"face": {"restore": 0.0}, "right_hand": {"on": True}}})
+    masks = cm.CharacterMasks([cm.FrameMasks(W, H, [alice])])
+    passes = list(dt.plan(masks, 0.35))
+    assert [(p.part, p.restore) for p in passes] == [("face", 0.0), ("right_hand", None)]
+    img = sharp_image()
+
+    def bluer(pixels, noise_mask, p, seed):          # the round trip blurs; the model shifts the colour
+        ref = dt.gaussian_blur(pixels[..., 0], 1.5)[..., None].repeat(1, 1, 3)
+        return ref + torch.tensor([0.0, 0.0, 0.2]), ref
+    out = dt.detail(img, masks, bluer, denoise=0.35, crop_size=256, padding=0.3, max_upscale=4.0, grow=0,
+                    feather=0, seed=0, restore=1.0)
+    face, hand = alice.parts["face"], alice.parts["right_hand"]
+    sharp = (img[0] + torch.tensor([0.0, 0.0, 0.2])).clamp(0, 1)
+    assert not torch.allclose(out[0][face], sharp[face], atol=1e-3)             # face: restore 0, left blurred
+    assert torch.allclose(out[0][hand], sharp[hand], atol=1e-4)                 # hand: node default, restored
+    assert dt.needs_reference(masks, 0.35, 0.0) is False
+    masks.frames[0].boxes[0] = character("alice", {"face": (30, 30, 70, 80)}, detail={"parts": {"face": {"restore": 0.5}}})
+    assert dt.needs_reference(masks, 0.35, 0.0) is True

@@ -6,7 +6,7 @@ import logging
 import os
 from collections import OrderedDict
 
-from .detailer import count_passes, detail
+from .detailer import count_passes, detail, needs_reference
 
 log = logging.getLogger("moss_regional_lora")
 
@@ -15,7 +15,7 @@ _RAW_LORAS_SIZE = 6
 
 
 def _raw_lora(name: str):
-    """A LoRA file as LoraLoader reads it (load_lora_for_models converts the format itself)."""
+    """A LoRA file as LoraLoader reads it (converted to ComfyUI's format when it is applied)."""
     import comfy.utils
     import folder_paths
     path = folder_paths.get_full_path_or_raise("loras", name)
@@ -41,8 +41,12 @@ def _sampler_names():
 
 
 class _Sampler:
-    """Re-samples one crop with ComfyUI's VAE and sampler, with a pass's prompt and LoRAs (model only, as
-    the main node applies them)."""
+    """Re-samples one crop with ComfyUI's VAE and sampler, with a pass's prompt and LoRAs.
+
+    LoRAs are applied to the model only, as the main node applies them, and matched to its layers with the
+    main node's key map (ComfyUI's own plus the naming styles it accepts, such as ``transformer.``), so a
+    LoRA that works in the main node works here too; patching itself is ComfyUI's (load_lora,
+    add_patches), as LoraLoader does."""
 
     def __init__(self, model, clip, vae, negative, steps, cfg, sampler_name, scheduler, reference=True):
         self.model, self.clip, self.vae = model, clip, vae
@@ -50,6 +54,7 @@ class _Sampler:
         self.steps, self.cfg, self.sampler_name, self.scheduler = steps, cfg, sampler_name, scheduler
         self._models = {}
         self._conds = {}
+        self._km = None
         self.negative = negative if negative is not None else self._encode("")
 
     def _encode(self, text):
@@ -57,13 +62,26 @@ class _Sampler:
             self._conds[text] = self.clip.encode_from_tokens_scheduled(self.clip.tokenize(text))
         return self._conds[text]
 
+    def _key_map(self):
+        if self._km is None:
+            from .node import _key_map
+            self._km = _key_map(self.model, self.model.get_model_object("diffusion_model"))
+        return self._km
+
     def _patched(self, loras):
         if loras not in self._models:
-            import comfy.sd
-            m = self.model
-            for name, weight in loras:
-                m, _ = comfy.sd.load_lora_for_models(m, None, _raw_lora(name), weight, 0)
-            self._models[loras] = m
+            if not loras:
+                self._models[loras] = self.model
+            else:
+                import comfy.lora
+                import comfy.lora_convert
+                m = self.model.clone()
+                for name, weight in loras:
+                    patches = comfy.lora.load_lora(comfy.lora_convert.convert_lora(_raw_lora(name)), self._key_map())
+                    if not patches:
+                        log.warning("[MOSS Regional Detailer] no layer of the model matched %s; it has no effect", name)
+                    m.add_patches(patches, weight)
+                self._models[loras] = m
         return self._models[loras]
 
     def __call__(self, pixels, noise_mask, p, seed):
@@ -154,7 +172,7 @@ class MossRegionalDetailer:
         import comfy.utils
         bar = comfy.utils.ProgressBar(total)
         sampler = _Sampler(model, clip, vae, negative, steps, cfg, sampler_name, scheduler,
-                           reference=restore_detail > 0)
+                           reference=needs_reference(character_masks, denoise, restore_detail))
 
         def on_pass(k, p):
             log.info("[MOSS Regional Detailer] %d/%d: %s %s (denoise %.2f)", k + 1, total, p.box, p.part, p.denoise)

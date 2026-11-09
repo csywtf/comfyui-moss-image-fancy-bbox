@@ -14,7 +14,7 @@ test("settings resolve exactly as the node resolves them (shared fixture)", () =
     const norm = { ...d, loras: d.loras.map((e) => [e.lora, e.weight]), points: d.points.map((p) => [p.x, p.y, p.label]) };
     assert.deepEqual(norm, c.expected, JSON.stringify(c.stored));
   }
-  assert.deepEqual(D.PART_NAMES, ["face", "eyes", "hands", "hair", "skin"]);
+  assert.deepEqual(D.PART_NAMES, ["face", "eyes", "left_hand", "right_hand", "hair", "skin"]);
 });
 
 test("parse: empty is defaults, bad JSON is an error, unknown fields survive an edit", () => {
@@ -25,14 +25,14 @@ test("parse: empty is defaults, bad JSON is an error, unknown fields survive an 
   const region = { id: "a", label: "character" };
   const d = D.detailFor(res.doc, region);
   assert.equal(d.enabled, false);
-  d.parts.hands.on = true;
+  d.parts.left_hand.on = true;
   d.loras.push({ lora: "eye.safetensors", weight: 0.5 });
   d.points.push({ x: 0.5, y: 0.25, label: 0 });
   const next = D.setDetail(res.doc, "a", d);
   const back = JSON.parse(D.serializeDetail(next));
   assert.equal(back.x_top[0], 1);
   assert.equal(back.boxes.a.x_box, 7);
-  assert.equal(back.boxes.a.parts.hands.on, true);
+  assert.equal(back.boxes.a.parts.left_hand.on, true);
   assert.deepEqual(back.boxes.a.loras, [{ lora: "eye.safetensors", weight: 0.5 }]);
   assert.deepEqual(back.boxes.a.points, [{ x: 0.5, y: 0.25, label: 0 }]);
   assert.deepEqual(res.doc.boxes.a, { enabled: false, x_box: 7 });            // input untouched
@@ -62,4 +62,15 @@ test("overlay: selected box strong, others faint, finest part on top, nothing wh
   assert.equal(bob[3], 45);                                           // alice faint while bob is selected
   assert.equal(bob[7], 25);
   assert.deepEqual([...bob.slice(8, 12)], [0xff, 0x9f, 0x1c, 170]);  // bob's face, strong
+});
+
+test("settings saved for 'hands' apply to both hands until one is edited", () => {
+  const doc = { version: 1, boxes: { a: { parts: { hands: { on: true, denoise: 0.5 } } } } };
+  const d = D.detailFor(doc, { id: "a", label: "character" });
+  assert.deepEqual(d.parts.left_hand, { on: true, prompt: "", denoise: 0.5, restore: null });
+  assert.deepEqual(d.parts.right_hand, d.parts.left_hand);
+  d.parts.right_hand.restore = 0;
+  const next = D.detailFor(D.setDetail(doc, "a", d), { id: "a", label: "character" });
+  assert.equal(next.parts.right_hand.restore, 0);
+  assert.equal(next.parts.left_hand.restore, null);
 });

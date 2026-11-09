@@ -77,6 +77,10 @@ class FakeRunner:
                 out |= rect_mask(*r, image.shape[0], image.shape[1])
         return out
 
+    def find_each(self, image, key, crop, prompt):
+        self.calls.append(("each", crop, prompt))
+        return self._detections(image, crop, prompt)
+
     def find(self, image, key, crop, prompt):
         self.calls.append(("find", crop, prompt, image.clone()))
         out = torch.zeros(image.shape[0], image.shape[1], dtype=torch.bool)
@@ -92,7 +96,7 @@ def test_detail_defaults_by_label():
     for label in ("object", "text"):
         d = cm.default_detail(label)
         assert not d.enabled and d.parts_on() == ["face", "eyes"]   # ticking Detail starts from face + eyes
-    assert cm.PART_NAMES == ("face", "eyes", "hands", "hair", "skin")
+    assert cm.PART_NAMES == ("face", "eyes", "left_hand", "right_hand", "hair", "skin")
     assert sorted(cm.DETAIL_ORDER) == sorted(cm.PART_NAMES)
 
 
@@ -106,8 +110,12 @@ def test_stored_settings_override_defaults_and_bad_values_are_ignored():
     d = cm.resolve_detail(b, raw)
     assert (d.enabled, d.prompt, d.use_box_loras) == (False, "green eyes", False)
     assert d.loras == (("eye.safetensors", 0.6),)
-    assert d.parts_on() == ["face", "hands"]
-    assert d.parts["hands"] == cm.PartSettings(True, "five fingers", 0.5)
+    # settings saved for "hands" (before left and right) apply to both hands
+    assert d.parts_on() == ["face", "left_hand", "right_hand"]
+    assert d.parts["left_hand"] == d.parts["right_hand"] == cm.PartSettings(True, "five fingers", 0.5)
+    both = cm.resolve_detail(b, {"parts": {"hands": {"on": True}, "right_hand": {"on": False, "restore": 0.25}}})
+    assert both.parts["left_hand"].on and not both.parts["right_hand"].on      # the new key wins
+    assert both.parts["right_hand"].restore == 0.25 and both.parts["left_hand"].restore is None
     assert d.parts["face"].denoise == 1.0                     # clamped
     assert cm.resolve_detail(b, {"enabled": "yes"}).enabled is True   # not a bool: default for a character
 
@@ -196,18 +204,18 @@ def test_mask_frame_finds_ticked_parts_per_character():
     f = cm.mask_frame(img, boxes, details(boxes, {"alice": {"parts": {"hands": {"on": True}}}}), None, runner, 0.1)
     assert [b.id for b in f.boxes] == ["alice", "bob"]          # lamp: an object, Detail off by default
     alice, bob = f.boxes
-    assert set(alice.parts) == {"face", "eyes", "hands"} and set(bob.parts) == {"face", "eyes"}
-    assert alice.found == {"face": True, "eyes": True, "hands": True}
+    assert set(alice.parts) == {"face", "eyes", "left_hand", "right_hand"} and set(bob.parts) == {"face", "eyes"}
+    assert alice.found == {"face": True, "eyes": True, "left_hand": True, "right_hand": False}   # one hand, on her left
     assert bob.found == {"face": True, "eyes": False}           # no eyes found in bob's crop
     assert torch.equal(alice.parts["face"], rect_mask(30, 20, 50, 40))   # bob's face isn't alice's
     assert torch.equal(bob.parts["face"], rect_mask(120, 20, 140, 40))
-    assert alice.caption == "alice caption" and alice.detail.parts_on() == ["face", "eyes", "hands"]
+    assert alice.caption == "alice caption" and alice.detail.parts_on() == ["face", "eyes", "left_hand", "right_hand"]
     # SAM3 asked once per box for the outline, then once per ticked part, on a crop around the box
     # no person detected in this scene: each box falls back to SAM3's box prompt
     assert [c[0] for c in runner.calls].count("person") == 2 and [c[0] for c in runner.calls].count("box") == 2
     finds = [c for c in runner.calls if c[0] == "find"]
-    assert len(finds) == 5
-    for c, r in zip(finds, [alice.rect] * 3 + [bob.rect] * 2):  # each crop holds its box, inside the image
+    assert len(finds) == 4 and [c[0] for c in runner.calls].count("each") == 1    # one hand search for both hands
+    for c, r in zip(finds, [alice.rect] * 2 + [bob.rect] * 2):  # each crop holds its box, inside the image
         x0, y0, x1, y1 = c[1]
         assert 0 <= x0 <= r[0] and 0 <= y0 <= r[1] and r[2] <= x1 <= W and r[3] <= y1 <= H
 
@@ -298,8 +306,9 @@ def test_a_plus_point_claims_an_arm_over_the_layer_order():
     left, right = f.boxes
     assert left.outline[50:60, 60:140].all()                     # the whole arm, across the other box
     assert (f.owner[50:60, 60:140] == 0).all()                    # hers, though the right box is on top
-    assert left.found["hands"] and left.parts["hands"][50:60, 130:140].all()   # her hand, at the arm's end
-    assert not right.parts["hands"][50:60, 130:140].any() and right.parts["hands"][80:90, 160:170].all()
+    # her hand at the end of the arm is hers (her right hand, as seen: right of her middle)
+    assert left.found["right_hand"] and left.parts["right_hand"][50:60, 130:140].all()
+    assert not right.parts["right_hand"][50:60, 130:140].any() and right.parts["right_hand"][80:90, 160:170].all()
     # her + point was passed to SAM3 as a negative for nobody else's claim (right has no points)
     assert [c for c in runner.calls if c[0] == "points"] == [("points", [(120, 55)], [])]
     lm = cm.label_map(f)
@@ -484,7 +493,7 @@ def test_node_outputs_and_editor_payload(fake_sam3, monkeypatch, tmp_path):
     ui = out["ui"][cmn.UI_KEY][0]
     assert (ui["width"], ui["height"], ui["parts"]) == (W, H, list(cm.PART_NAMES))
     assert [b["id"] for b in ui["boxes"]] == ["alice", "bob"]
-    assert ui["boxes"][1]["found"] == {"face": True, "eyes": False, "hands": False}
+    assert ui["boxes"][1]["found"] == {"face": True, "eyes": False, "left_hand": False, "right_hand": False}
     from PIL import Image
     labels = np.array(Image.open(tmp_path / ui["labels"]["filename"]))
     assert labels.shape == (H, W, 4) and labels[30, 40, 0] == 1 and ui["image"]["type"] == "temp"
@@ -507,9 +516,10 @@ def test_detail_resolution_matches_the_editor():
         got = {"enabled": d.enabled, "prompt": d.prompt, "use_box_loras": d.use_box_loras,
                "loras": [list(e) for e in d.loras],
                "points": [[x, y, 1 if pos else 0] for x, y, pos in d.points],
-               "parts": {n: {"on": p.on, "prompt": p.prompt, "denoise": p.denoise} for n, p in d.parts.items()}}
+               "parts": {n: {"on": p.on, "prompt": p.prompt, "denoise": p.denoise, "restore": p.restore}
+                         for n, p in d.parts.items()}}
         assert got == case["expected"], case
-    assert [p.name for p in cm.PARTS] == ["face", "eyes", "hands", "hair", "skin"]
+    assert [p.name for p in cm.PARTS] == ["face", "eyes", "left_hand", "right_hand", "hair", "skin"]
 
 
 def test_regions_without_view_only_fields_work():
@@ -527,3 +537,49 @@ def test_regions_without_view_only_fields_work():
 def cm_palette():
     from moss_regional_lora.regions import PALETTE
     return PALETTE
+
+
+
+# ------------------------------------------------------------------------- left and right hands
+def test_split_sides():
+    a, b = rect_mask(10, 10, 30, 30), rect_mask(150, 10, 170, 30)
+    left, right = cm.split_sides([b, a], 100)                   # order of detection doesn't matter
+    assert torch.equal(left, a) and torch.equal(right, b)
+    # touching / overlapping: the shared pixels split at the midpoint between them
+    l2, r2 = cm.split_sides([rect_mask(40, 10, 70, 30), rect_mask(60, 10, 90, 30)], 0)
+    assert l2[20, 40:65].all() and not l2[20, 65:].any() and r2[20, 65:90].all() and not r2[20, :65].any()
+    assert not (l2 & r2).any()
+    # one hand: by the character's middle
+    one = rect_mask(150, 10, 170, 30)
+    l3, r3 = cm.split_sides([one], 100)
+    assert not l3.any() and torch.equal(r3, one)
+    l4, _ = cm.split_sides([one], 190)
+    assert torch.equal(l4, one)
+    # a third detection joins the nearer hand; empty ones are ignored
+    extra = rect_mask(20, 40, 25, 45)
+    l5, r5 = cm.split_sides([a, b, extra, torch.zeros(H, W, dtype=torch.bool)], 100)
+    assert torch.equal(l5, a | extra) and torch.equal(r5, b)
+    assert cm.split_sides([], 100) == (None, None)
+
+
+def test_each_hand_gets_its_own_settings():
+    boxes = [box("c", centred(10, 5, 190, 95))]
+    scene = {"hand": [(20, 60, 35, 75), (160, 60, 175, 75)]}
+    stored = {"c": {"parts": {"face": {"on": False}, "eyes": {"on": False},
+                              "left_hand": {"on": True, "denoise": 0.7, "restore": 0.0}, "right_hand": {"on": True}}}}
+    f = cm.mask_frame(torch.rand(H, W, 3), boxes, details(boxes, stored), None, FakeRunner(scene), 0.1)
+    c = f.boxes[0]
+    assert torch.equal(c.parts["left_hand"], rect_mask(20, 60, 35, 75))
+    assert torch.equal(c.parts["right_hand"], rect_mask(160, 60, 175, 75))
+    assert c.detail.parts["left_hand"].denoise == 0.7 and c.detail.parts["right_hand"].denoise is None
+    lm = cm.label_map(f)
+    assert lm[65, 25, 1] == 1 << cm.PART_NAMES.index("left_hand") and lm[65, 165, 1] == 1 << cm.PART_NAMES.index("right_hand")
+
+
+def test_runner_find_each_returns_each_detection(fake_sam3):
+    r = cm.Sam3Runner(types.SimpleNamespace(model=object()), FakeClip(), 0.5, 2)
+    img = torch.rand(H, W, 3)
+    each = r.find_each(img, cm.image_key(img), (100, 30, 160, 90), "hand:4")
+    c = fake_sam3.calls[-1]
+    assert c["individual"] is True and c["cond"] == [["cond:hand:4", {}]]
+    assert len(each) == 2 and each[0][30:32, 100:103].all() and each[1][89, 159] and each[1].sum() == 1
