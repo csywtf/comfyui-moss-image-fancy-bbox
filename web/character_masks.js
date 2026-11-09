@@ -12,7 +12,14 @@ import { api } from "../../scripts/api.js";
 import * as G from "./geometry.js";
 import * as S from "./state.js";
 import * as D from "./detail_state.js";
-import { el, hideWidget, injectCss, loraDisplayName, loraList } from "./regional_lora_editor.js";
+import { el, hideWidget, injectCss, loraDisplayName, loraList, zoomButtons, zoomKey } from "./regional_lora_editor.js";
+import { Viewport, installPanZoom } from "./viewport.js";
+
+// Tools in the floating toolbar: {id, icon (a name in icons.js), key, title}.
+const TOOLS = [
+  { id: "select", icon: "mouse-pointer-2", key: "v", title: "Select (V): click a character to select its box; Shift-click / Alt-click to add + / − points for the selected box." },
+  { id: "hand", icon: "hand", key: "h", title: "Hand (H): drag to pan. Any tool: hold Space or drag with the middle button to pan; the wheel zooms." },
+];
 
 const NODE_NAME = "MossCharacterMasks";
 const EDITOR_WIDGET = "masks_editor";
@@ -82,6 +89,8 @@ class MasksEditor {
   constructor(node) {
     this.node = node;
     this.selected = null;
+    this.tool = "select";
+    this.viewport = new Viewport();
     this.result = null; // the last run's payload
     this.image = null; // HTMLImageElement of the last run's image
     this.labels = null; // ImageData of its label map
@@ -122,8 +131,14 @@ class MasksEditor {
   build() {
     this.list = el("div", { class: "mrl-panel-body" });
     const boxes = el("div", { class: "mrl-panel mcm-boxes" }, [el("div", { class: "mrl-panel-head", text: "Boxes" }), this.list]);
-    this.canvas = el("canvas");
-    this.wrap = el("div", { class: "mrl-canvas-wrap" }, [this.canvas]);
+    this.canvas = el("canvas", { tabindex: "0" }); // focusable, so tool and zoom keys work after a click
+    this.toolButtons = {};
+    const tools = el("div", { class: "mrl-tools" }, [
+      ...TOOLS.map((t) => (this.toolButtons[t.id] = el("button", { icon: t.icon, iconSize: 16, title: t.title, onclick: () => this.setTool(t.id) }))),
+      el("div", { class: "mrl-tool-sep" }),
+      ...zoomButtons(this),
+    ]);
+    this.wrap = el("div", { class: "mrl-canvas-wrap" }, [this.canvas, tools]);
     this.propsTitle = el("span", { class: "grow" });
     this.props = el("div", { class: "mrl-panel-body" });
     const props = el("div", { class: "mrl-panel mrl-props" }, [el("div", { class: "mrl-panel-head" }, [this.propsTitle]), this.props]);
@@ -134,7 +149,43 @@ class MasksEditor {
     this.canvas.addEventListener("pointerdown", (e) => this.onCanvasDown(e));
     this.canvas.addEventListener("pointermove", (e) => this.onCanvasMove(e));
     this.root.addEventListener("pointerdown", (e) => e.stopPropagation());
-    this.root.addEventListener("keydown", (e) => e.stopPropagation()); // typing here isn't a graph shortcut
+    this.root.addEventListener("keydown", (e) => {
+      e.stopPropagation(); // typing here isn't a graph shortcut
+      if (/^(input|textarea|select)$/i.test(e.target?.tagName || "") || e.ctrlKey || e.metaKey || e.altKey) return;
+      if (zoomKey(this, e)) return;
+      const tool = TOOLS.find((t) => t.key === e.key.toLowerCase());
+      if (tool) this.setTool(tool.id);
+    });
+    installPanZoom({
+      canvas: this.canvas,
+      root: this.root,
+      viewport: this.viewport,
+      size: () => {
+        const v = this.view();
+        return { W: v.W, H: v.H, cw: v.cw, ch: v.ch };
+      },
+      handTool: () => this.tool === "hand",
+      redraw: () => this.draw(),
+      cursor: (k) => (this.canvas.style.cursor = k || "default"),
+    });
+    this.renderTools();
+  }
+
+  setTool(id) {
+    this.tool = id;
+    this.renderTools();
+    this.canvas.style.cursor = id === "hand" ? "grab" : "default";
+  }
+
+  renderTools() {
+    for (const t of TOOLS) this.toolButtons[t.id].classList.toggle("on", this.tool === t.id);
+  }
+
+  zoom(factor) {
+    const v = this.view();
+    if (factor === null) this.viewport.reset();
+    else this.viewport.zoomBy(factor, v.W, v.H, v.cw, v.ch);
+    this.draw();
   }
 
   // ------------------------------------------------------------------ data
@@ -441,12 +492,10 @@ class MasksEditor {
   // ------------------------------------------------------------------ preview
   /** Layout geometry (CSS px before the graph's zoom), as the main editor does. */
   view() {
-    const cw = this.wrap.clientWidth;
-    const ch = this.wrap.clientHeight;
     const W = this.result?.width || this.src?.W || 1024;
     const H = this.result?.height || this.src?.H || 1024;
-    const s = Math.max(1e-6, Math.min((cw - 2) / W, (ch - 2) / H));
-    return { cw, ch, W, H, s, ox: (cw - W * s) / 2, oy: (ch - H * s) / 2 };
+    const v = this.viewport.view(W, H, this.wrap.clientWidth, this.wrap.clientHeight);
+    return { ...v, s: v.scale };
   }
 
   /** A pointer event in image pixels. The graph's zoom CSS-scales this editor, so the on-screen offset is
@@ -532,6 +581,7 @@ class MasksEditor {
   }
 
   onCanvasDown(e) {
+    this.canvas.focus();
     const { x, y, v } = this.eventPoint(e);
     const region = this.boxes().find(({ region }) => region.id === this.selected)?.region;
     if (region && this.doc().ok) {

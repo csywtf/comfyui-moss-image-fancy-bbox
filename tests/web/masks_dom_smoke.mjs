@@ -292,7 +292,44 @@ assert.equal(await cursor(), "crosshair");
 await page.evaluate(() => { document.getElementById("host").style.transform = ""; });
 console.log("zoom ok");
 
-// 7. disconnected: says what to connect
+// 7. zoom and pan: a Shift-click while zoomed and panned lands on the right image pixel; panning edits nothing
+if ((await page.evaluate(() => window.node.__mcmEditor.selected)) !== "alice") await row("Alice").click();
+await page.locator(".mrl-props button", { hasText: "Clear" }).click().catch(() => {});
+const mv = () => page.evaluate(() => { const v = window.node.__mcmEditor.view(); return { s: v.s, ox: v.ox, oy: v.oy }; });
+async function mImg(x, y) {
+  const v = await mv();
+  return page.evaluate(([x, y, v]) => {
+    const r = document.querySelector(".mrl-canvas-wrap canvas").getBoundingClientRect();
+    return { x: r.left + v.ox + x * v.s, y: r.top + v.oy + y * v.s };
+  }, [x, y, v]);
+}
+const m0 = await mv();
+let mq = await mImg(150, 60);
+await page.mouse.move(mq.x, mq.y);
+await page.mouse.wheel(0, -500);
+await page.waitForTimeout(50);
+assert.ok((await mv()).s > m0.s * 1.2);
+await page.locator(".mrl-canvas-wrap canvas").focus();
+await page.keyboard.press("h");
+const before7 = JSON.stringify(await detail());
+const cb = await page.locator(".mrl-canvas-wrap canvas").boundingBox();
+await page.mouse.move(cb.x + cb.width / 2, cb.y + cb.height / 2);
+await page.mouse.down();
+await page.mouse.move(cb.x + cb.width / 2 - 40, cb.y + cb.height / 2 + 15, { steps: 4 });
+await page.mouse.up();
+assert.equal(JSON.stringify(await detail()), before7);                                     // panning edits nothing
+assert.match(await page.locator(".mrl-props .mrl-panel-head").innerText(), /Alice/);      // or deselects
+await page.keyboard.press("v");
+mq = await mImg(150, 60);
+await page.keyboard.down("Shift");
+await page.mouse.click(mq.x, mq.y);
+await page.keyboard.up("Shift");
+assert.deepEqual((await detail()).boxes.alice.points.slice(-1), [{ x: 0.75, y: 0.6, label: 1 }]);
+await page.locator('.mrl-tools button[title^="Fit"]').click();
+assert.ok(Math.abs((await mv()).s - m0.s) < 1e-9);
+console.log("masks zoom/pan ok");
+
+// 8. disconnected: says what to connect
 await page.evaluate(() => { window.node.inputs[1].link = null; });
 await page.waitForFunction(() => /Connect the regions output/.test(document.querySelector(".mcm-boxes").textContent));
 console.log("disconnected ok");

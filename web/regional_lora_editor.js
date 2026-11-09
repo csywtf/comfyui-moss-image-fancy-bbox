@@ -19,6 +19,7 @@ import * as C from "./curve.js";
 import { CurvePanel, drawSparkline } from "./curve_panel.js";
 import { icon } from "./icons.js";
 import { dropRemovedGridValues } from "./migrate.js";
+import { Viewport, installPanZoom, zoomInFactor, zoomOutFactor } from "./viewport.js";
 
 const NODE_NAME = "MossRegionalLora";
 const EDITOR_WIDGET = "region_editor";
@@ -43,6 +44,7 @@ const MIN_CREATE_PX = 3; // drags shorter than this (image px) are clicks, not c
 const TOOLS = [
   { id: "select", icon: "mouse-pointer-2", key: "v", title: "Select (V): click to select, drag a box to move it, drag a handle to resize. Click the background to deselect." },
   { id: "box", icon: "square", key: "b", title: "Box (B): drag to draw a new box. Shift: square, Alt: from the centre." },
+  { id: "hand", icon: "hand", key: "h", title: "Hand (H): drag to pan. Any tool: hold Space or drag with the middle button to pan; the wheel zooms." },
 ];
 
 const CSS = `
@@ -70,6 +72,7 @@ const CSS = `
 .mrl-tools{position:absolute;left:8px;top:8px;z-index:2;display:flex;flex-direction:column;gap:3px;padding:4px;background:rgba(30,30,30,.92);border:1px solid var(--border-color,#555);border-radius:6px;box-shadow:0 2px 10px rgba(0,0,0,.45)}
 .mrl-tools button{width:30px;height:30px;padding:0}
 .mrl-tools button.on{background:#3a6ea5;border-color:#6af}
+.mrl-tool-sep{height:1px;background:var(--border-color,#555);margin:2px 0}
 .mrl-panel{display:flex;flex-direction:column;min-height:0;border:1px solid var(--border-color,#444);border-radius:3px;background:rgba(0,0,0,.15)}
 .mrl-panel-head{display:flex;align-items:center;gap:4px;padding:3px 5px;font-weight:bold;border-bottom:1px solid rgba(128,128,128,.3)}
 .mrl-panel-head .grow{flex:1}
@@ -213,6 +216,7 @@ class RegionEditor {
     this.wCaption = node.widgets.find((w) => w.name === "caption");
     this.advancedOpen = false;
     this.history = new S.History(100);
+    this.viewport = new Viewport();
     this.state = S.emptyState();
     this.parseError = null;
     this.warnings = [];
@@ -262,7 +266,11 @@ class RegionEditor {
     const tools = el(
       "div",
       { class: "mrl-tools" },
-      TOOLS.map((t) => (this.toolButtons[t.id] = el("button", { icon: t.icon, iconSize: 16, title: t.title, onclick: () => this.setTool(t.id) }))),
+      [
+        ...TOOLS.map((t) => (this.toolButtons[t.id] = el("button", { icon: t.icon, iconSize: 16, title: t.title, onclick: () => this.setTool(t.id) }))),
+        el("div", { class: "mrl-tool-sep" }),
+        ...zoomButtons(this),
+      ],
     );
 
     this.list = el("div", { class: "mrl-panel-body" });
@@ -308,6 +316,15 @@ class RegionEditor {
     c.addEventListener("dblclick", (e) => e.stopPropagation());
     c.addEventListener("contextmenu", (e) => e.stopPropagation());
     this.root.addEventListener("keydown", (e) => this.onKey(e));
+    installPanZoom({
+      canvas: c,
+      root: this.root,
+      viewport: this.viewport,
+      size: () => ({ ...this.canvasSize(), cw: this.wrap.clientWidth, ch: this.wrap.clientHeight }),
+      handTool: () => this.tool === "hand",
+      redraw: () => this.draw(),
+      cursor: (k) => (c.style.cursor = k || this.toolCursor()),
+    });
     // keep ComfyUI's canvas from treating clicks inside the editor as node drags
     this.root.addEventListener("pointerdown", (e) => e.stopPropagation());
   }
@@ -510,12 +527,21 @@ class RegionEditor {
     return G.centeredToCanvas(bbox, W, H);
   }
 
+  /** Layout geometry: image px -> canvas px is (x * scale + ox, y * scale + oy), with zoom and pan. */
   view() {
     const { W, H } = this.canvasSize();
-    const cw = this.wrap.clientWidth;
-    const ch = this.wrap.clientHeight;
-    const fit = G.fitCanvas(W, H, Math.max(cw - 2, 1), Math.max(ch - 2, 1));
-    return { W, H, cw, ch, scale: fit.scale, ox: (cw - fit.w) / 2, oy: (ch - fit.h) / 2 };
+    return this.viewport.view(W, H, this.wrap.clientWidth, this.wrap.clientHeight);
+  }
+
+  zoom(factor) {
+    const { W, H } = this.canvasSize();
+    if (factor === null) this.viewport.reset();
+    else this.viewport.zoomBy(factor, W, H, this.wrap.clientWidth, this.wrap.clientHeight);
+    this.draw();
+  }
+
+  toolCursor() {
+    return this.tool === "box" ? "crosshair" : this.tool === "hand" ? "grab" : "default";
   }
 
   eventPoint(e) {
@@ -568,7 +594,7 @@ class RegionEditor {
   setTool(id) {
     this.tool = id;
     this.renderTools();
-    this.canvas.style.cursor = id === "box" ? "crosshair" : "default";
+    this.canvas.style.cursor = this.toolCursor();
   }
 
   // ------------------------------------------------------------------ pointer interaction (8.4a)
@@ -730,6 +756,7 @@ class RegionEditor {
       else this.select(null, false);
       return;
     }
+    if (!mod && !e.altKey && zoomKey(this, e)) return;
     if (!mod && !e.altKey) {
       const tool = TOOLS.find((t) => t.key === e.key.toLowerCase());
       if (tool) {
@@ -1465,6 +1492,25 @@ class RegionEditor {
     } else this.status = `Last run: ${summary.message || "inactive"}${items}`;
     this.statusLine.textContent = this.status;
   }
+}
+
+/** Zoom in / out / fit buttons for an editor's floating toolbar (editor.zoom(factor | null)). */
+export function zoomButtons(editor) {
+  return [
+    el("button", { icon: "zoom-in", iconSize: 16, title: "Zoom in (+). The wheel zooms around the pointer.", onclick: () => editor.zoom(zoomInFactor) }),
+    el("button", { icon: "zoom-out", iconSize: 16, title: "Zoom out (−)", onclick: () => editor.zoom(zoomOutFactor) }),
+    el("button", { icon: "maximize", iconSize: 16, title: "Fit (0)", onclick: () => editor.zoom(null) }),
+  ];
+}
+
+/** + / − / 0 zoom keys; true if the key was one. */
+export function zoomKey(editor, e) {
+  const f = { "+": zoomInFactor, "=": zoomInFactor, "-": zoomOutFactor, _: zoomOutFactor, 0: null }[e.key];
+  if (f === undefined) return false;
+  e.preventDefault();
+  e.stopPropagation();
+  editor.zoom(f);
+  return true;
 }
 
 /** Hide a native widget (ComfyUI frontend: `hidden`; older LiteGraph: zero height). */

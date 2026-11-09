@@ -127,7 +127,11 @@ arrives with invalid JSON, the editor turns red and becomes read-only (except th
 JSON, to fix it); it never overwrites the text.
 
 - **Tools** (floating at the top left of the canvas): **Select** (V) clicks, moves and resizes boxes; clicking the background deselects.
-  **Box** (B) draws a new box, then switches back to Select with the new box selected.
+  **Box** (B) draws a new box, then switches back to Select with the new box selected. **Hand** (H)
+  pans. Below them: zoom in, zoom out and fit.
+- **Zoom and pan** (both editors): the mouse wheel over the canvas zooms around the pointer (the
+  ComfyUI graph doesn't zoom there); drag with the Hand tool, or hold Space or the middle button with
+  any tool, to pan. Keys: `+` / `-` zoom, `0` fits the image again.
 - **Layers**: one row per box, with colour, name, badges (`2L` = two LoRAs, `✎` = in the
   layout prompt, ⚠ = extends past the canvas), then the visibility (eye) and lock toggles and
   move up / down. Click a row to select the box.
@@ -250,7 +254,8 @@ takes the sleeve). Each box's + points also count as − points for every other 
 fractions of the image, and skin and hands then follow the corrected outlines. Like any detail setting,
 they re-run only this node, not the image.
 
-**The editor** (all of the node's inputs are hidden and set here):
+**The editor** (all of the node's inputs are hidden and set here; a floating toolbar has Select, Hand
+and the zoom buttons, with the same zoom and pan controls as the main editor):
 
 - **Boxes** (left): read live from the connected main node, with the same names and colours. The
   checkbox turns Detail on or off; after a run, a dot per ticked part shows whether it was found
