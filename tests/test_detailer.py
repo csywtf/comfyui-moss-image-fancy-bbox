@@ -459,8 +459,12 @@ def test_grown_feathered_edge_stops_at_other_characters():
     out = dt.detail(img, masks, sampler, denoise=0.5, crop_size=256, padding=0.3, max_upscale=4.0, grow=6,
                     feather=12, seed=0)
     assert torch.equal(out[0][owner == 1], img[0][owner == 1])        # the neighbour is untouched
-    assert torch.allclose(out[0, 80, 103], torch.ones(3))             # the part itself is redrawn
-    assert bool((out[0, 80, 106] != img[0, 80, 106]).any())           # unowned edge pixels may still blend
+    assert torch.allclose(out[0, 80, 100], torch.ones(3), atol=1e-3)  # the part itself is redrawn
+    # towards the neighbour the redraw fades out over a few pixels instead of stopping at a hard line
+    fade = dt.keep_out_fade(p.keep_out, 12)[80]
+    assert float(fade[107]) == 0.0 and float(fade[99]) > 0.99
+    steps = [float(fade[x]) for x in range(100, 107)]
+    assert all(a >= b for a, b in zip(steps, steps[1:])) and 0 < steps[3] < 1
     # without an ownership map (older results) the edge spreads as before
     masks.frames[0].owner = None
     out2 = dt.detail(img, masks, sampler, denoise=0.5, crop_size=256, padding=0.3, max_upscale=4.0, grow=6,

@@ -334,8 +334,9 @@ fine (skin, hair, face, hands, eyes), each as its own pass on the image so far:
    to change its style, e.g. a hand that was generated in the other character's style.
 4. **Blend** it back with the feathered mask. Pixels outside every part's feathered mask are untouched,
    bit for bit, and so are other characters' pixels: growing and feathering a part's mask stop where the
-   masks say another character begins, so a thin part (a few fingers wrapped around someone) can't
-   repaint, or merge into, the character next to it.
+   masks say another character begins (fading out over a few pixels before it, more with a larger
+   `feather`), so a thin part (a few fingers wrapped around someone) can't repaint, or merge into, the
+   character next to it.
 
 **See what each pass drew:** connect a Preview Image to the `passes` output. It holds one image per
 pass, in the order of the log: the crop as it went into the sampler (left) and as the model redrew it
