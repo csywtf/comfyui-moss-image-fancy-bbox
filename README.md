@@ -251,8 +251,9 @@ If the image isn't the canvas size (an upscaled image), the boxes are scaled to 
 - **Targets:** *Character* (the selected box's whole outline: paint an arm across the other character to
   make it hers, whatever the layer order), any of its **parts** (face, eyes, left hand, ...), or
   **Protect** (all boxes: pixels no part of any character may cover, e.g. text that must not be redrawn).
-- **Add brush** (B) paints pixels into the target; **Remove brush** (E) paints them out (for a part: "this
-  is hair, not the hand"). `[` and `]` change the brush size.
+- **Add brush** (B) paints pixels into the target; **Remove brush** (N) paints them out (for a part: "this
+  is hair, not the hand"); the **Eraser** (E) wipes either kind of paint, so those pixels go back to what
+  SAM3 found (on Protect it clears Protect). `[` and `]` change the brush size.
 - **Magic wand** (W): click to add similar-coloured pixels, Alt-click to remove them. *Tolerance* sets
   how different a colour may be; *Connected* (on) takes only pixels joined to the click, off takes every
   similar pixel inside the selected box. It picks colours from the last run's image.

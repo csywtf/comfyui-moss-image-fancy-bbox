@@ -20,11 +20,13 @@ import * as P from "./paint.js";
 const TOOLS = [
   { id: "select", icon: "mouse-pointer-2", key: "v", title: "Select (V): click a character to select its box." },
   { id: "hand", icon: "hand", key: "h", title: "Hand (H): drag to pan. Any tool: hold Space or drag with the middle button to pan; the wheel zooms." },
-  { id: "add", icon: "paintbrush", key: "b", title: "Add brush (B): paint pixels into the target (the selected box's character or part, or Protect). [ and ] change the size." },
-  { id: "sub", icon: "eraser", key: "e", title: "Remove brush (E): paint pixels out of the target. [ and ] change the size." },
+  { id: "add", icon: "paintbrush", badge: "+", key: "b", title: "Add brush (B): paint pixels into the target (the selected box's character or part, or Protect). [ and ] change the size." },
+  { id: "sub", icon: "paintbrush", badge: "\u2212", key: "n", title: "Remove brush (N): paint pixels out of the target (\"this isn't the hand\"). [ and ] change the size." },
+  { id: "erase", icon: "eraser", key: "e", title: "Eraser (E): wipe your add and remove paint, so those pixels go back to what SAM3 found. [ and ] change the size." },
   { id: "wand", icon: "wand-sparkles", key: "w", title: "Magic wand (W): click to add similar-coloured pixels to the target, Alt-click to remove them. Tolerance and 'connected' in the tool options." },
 ];
-const PAINT_TOOLS = ["add", "sub", "wand"];
+const BRUSH_TOOLS = ["add", "sub", "erase"];
+const PAINT_TOOLS = [...BRUSH_TOOLS, "wand"];
 const ADD_RGB = "#ffffff";
 
 const NODE_NAME = "MossCharacterMasks";
@@ -58,6 +60,8 @@ const CSS = `
 .mcm-lora input[type=text]{flex:1;min-width:0}
 .mcm-lora input[type=number]{width:54px}
 .mcm-empty{padding:8px;opacity:.7}
+.mrl-tools button{position:relative}
+.mcm-badge{position:absolute;right:-2px;bottom:-2px;min-width:11px;height:11px;border-radius:6px;background:#111;border:1px solid #888;font:bold 10px/11px sans-serif;text-align:center;pointer-events:none}
 .mcm-opts{position:absolute;left:52px;top:8px;right:8px;z-index:2;display:none;flex-wrap:wrap;align-items:center;gap:6px;padding:4px 6px;background:rgba(30,30,30,.92);border:1px solid var(--border-color,#555);border-radius:6px;box-shadow:0 2px 10px rgba(0,0,0,.45)}
 .mcm-opts.on{display:flex}
 .mcm-opts label{display:inline-flex;align-items:center;gap:4px}
@@ -154,7 +158,11 @@ class MasksEditor {
     this.canvas = el("canvas");
     this.toolButtons = {};
     const tools = el("div", { class: "mrl-tools" }, [
-      ...TOOLS.map((t) => (this.toolButtons[t.id] = el("button", { icon: t.icon, iconSize: 16, title: t.title, onclick: () => this.setTool(t.id) }))),
+      ...TOOLS.map((t) => {
+        const b = el("button", { icon: t.icon, iconSize: 16, title: t.title, onclick: () => this.setTool(t.id) });
+        if (t.badge) b.append(el("span", { class: "mcm-badge", text: t.badge }));
+        return (this.toolButtons[t.id] = b);
+      }),
       el("div", { class: "mrl-tool-sep" }),
       ...zoomButtons(this),
     ]);
@@ -221,7 +229,7 @@ class MasksEditor {
   }
 
   toolCursor() {
-    return { hand: "grab", add: "none", sub: "none", wand: "crosshair" }[this.tool] || "default";
+    return { hand: "grab", add: "none", sub: "none", erase: "none", wand: "crosshair" }[this.tool] || "default";
   }
 
   /** The tool options strip over the canvas: what to paint, brush size, wand tolerance. */
@@ -297,13 +305,12 @@ class MasksEditor {
   }
 
   /** A brush segment straight into the layers (no full-size temporaries), then only that patch of the
-   * overlay is redrawn. */
-  stampPaint(L, x0, y0, x1, y1, add) {
+   * overlay is redrawn. tool: "add" paints in, "sub" paints out, "erase" wipes both back to unpainted
+   * (Protect has one layer: "sub" and "erase" both clear it). */
+  stampPaint(L, x0, y0, x1, y1, tool) {
     const r = this.brush;
-    if (L.sub) {
-      P.strokeLine(add ? L.add : L.sub, x0, y0, x1, y1, r, 1);
-      P.strokeLine(add ? L.sub : L.add, x0, y0, x1, y1, r, 0);
-    } else P.strokeLine(L.add, x0, y0, x1, y1, r, add ? 1 : 0);
+    P.strokeLine(L.add, x0, y0, x1, y1, r, tool === "add" ? 1 : 0);
+    if (L.sub) P.strokeLine(L.sub, x0, y0, x1, y1, r, tool === "sub" ? 1 : 0);
     if (this.paintCanvas && this.paintFor === L) this.updatePaintRect(P.strokeBounds(L.add, x0, y0, x1, y1, r));
     else this.paintCanvas = null;
   }
@@ -722,10 +729,10 @@ class MasksEditor {
       this.hoverPart = part;
       this.requestDraw();
     }
-    if (this.tool === "add" || this.tool === "sub") {
+    if (BRUSH_TOOLS.includes(this.tool)) {
       this.hover = { x, y };
       if (this.stroke) {
-        this.stampPaint(this.stroke.L, this.stroke.x, this.stroke.y, x, y, this.tool === "add");
+        this.stampPaint(this.stroke.L, this.stroke.x, this.stroke.y, x, y, this.tool);
         this.stroke.x = x;
         this.stroke.y = y;
       }
@@ -801,7 +808,7 @@ class MasksEditor {
       return true;
     }
     this.stroke = { L, x, y };
-    this.stampPaint(L, x, y, x, y, this.tool === "add");
+    this.stampPaint(L, x, y, x, y, this.tool);
     this.canvas.setPointerCapture?.(e.pointerId);
     this.draw();
     return true;
@@ -883,12 +890,14 @@ class MasksEditor {
       const hx = v.ox + this.hoverPart.x * v.s + 14, hy = v.oy + this.hoverPart.y * v.s + 10;
       this.pill(g, this.hoverPart.text, this.hoverPart.color, Math.min(hx, v.cw - 140), Math.min(hy, v.ch - 18), 0.95, "corner");
     }
-    if (this.hover && (this.tool === "add" || this.tool === "sub")) {
+    if (this.hover && BRUSH_TOOLS.includes(this.tool)) {
       g.beginPath();
       g.arc(v.ox + this.hover.x * v.s, v.oy + this.hover.y * v.s, Math.max(1, this.brush * v.s), 0, Math.PI * 2);
       g.lineWidth = 1.5;
-      g.strokeStyle = this.tool === "add" ? ADD_RGB : "#ff3b30";
+      g.strokeStyle = { add: ADD_RGB, sub: "#ff3b30", erase: "#bbbbbb" }[this.tool];
+      if (this.tool === "erase") g.setLineDash([4, 3]);
       g.stroke();
+      g.setLineDash([]);
     }
   }
 
