@@ -34,9 +34,10 @@ const CSS = `
 .mcm-dots{display:flex;gap:2px}
 .mcm-dot{width:8px;height:8px;border-radius:50%;border:1px solid rgba(0,0,0,.4)}
 .mcm-dot.missing{background:transparent!important;border:1px dashed #f88}
-.mcm-parts{display:grid;grid-template-columns:auto 10px 44px 1fr 68px;gap:3px 4px;align-items:center}
-.mcm-parts input[type=text]{min-width:0;width:100%}
+.mcm-parts{display:grid;grid-template-columns:auto 10px 1fr 68px 68px;gap:3px 4px;align-items:center}
+.mcm-parts input[type=text]{min-width:0;width:100%;grid-column:2 / -1;margin-bottom:4px}
 .mcm-parts input[type=number]{width:68px}
+.mcm-col{font-size:10px;opacity:.65;text-align:center}
 .mcm-chip{width:10px;height:10px;border-radius:2px}
 .mcm-status{font-size:10px;opacity:.8;grid-column:2 / -1;margin-top:-2px}
 .mcm-status.missing{color:#f99;opacity:1}
@@ -375,29 +376,35 @@ class MasksEditor {
   partsSection(region) {
     const det = this.detailOf(region);
     const rb = this.resultBox(region.id);
-    const cells = [];
+    const cells = [el("span"), el("span"), el("span"), el("span", { class: "mcm-col", text: "denoise" }), el("span", { class: "mcm-col", text: "restore" })];
+    const unit = (input, key, p) => {
+      input.addEventListener("change", () => {
+        const v = input.value.trim() === "" ? null : Math.min(1, Math.max(0, Number(input.value)));
+        if (v === null || Number.isFinite(v)) this.updateDetail(region, (x) => (x.parts[p.name][key] = v));
+      });
+      return input;
+    };
     for (const p of D.PARTS) {
       const s = det.parts[p.name];
-      const on = el("input", { type: "checkbox", title: `Mask and detail the ${p.name}` });
+      const on = el("input", { type: "checkbox", title: `Mask and detail the ${p.label}` });
       on.checked = s.on;
       on.addEventListener("change", () => this.updateDetail(region, (x) => (x.parts[p.name].on = on.checked)));
-      const prompt = el("input", { type: "text", value: s.prompt, placeholder: p.hint, title: `Prompt for the ${p.name} (empty: "${p.hint}")` });
+      const prompt = el("input", { type: "text", value: s.prompt, placeholder: p.hint, title: `Prompt for the ${p.label} (empty: "${p.hint}")` });
       prompt.addEventListener("change", () => this.updateDetail(region, (x) => (x.parts[p.name].prompt = prompt.value)));
-      const dn = el("input", { type: "number", min: "0", max: "1", step: "0.05", value: s.denoise == null ? "" : String(s.denoise), placeholder: "default", title: "Denoise for this part (empty: the detailer's default)" });
-      dn.addEventListener("change", () => {
-        const v = dn.value.trim() === "" ? null : Math.min(1, Math.max(0, Number(dn.value)));
-        if (v === null || Number.isFinite(v)) this.updateDetail(region, (x) => (x.parts[p.name].denoise = v));
-      });
-      cells.push(on, el("span", { class: "mcm-chip", style: `background:${p.color}` }), el("span", { text: p.name }), prompt, dn);
-      if (rb && s.on && det.enabled && p.name in (rb.found || {})) {
-        const ok = rb.found[p.name];
-        cells.push(el("span"), el("span", { class: `mcm-status${ok ? "" : " missing"}`, text: ok ? "found" : "not found: try a lower threshold" }));
+      const dn = unit(el("input", { type: "number", min: "0", max: "1", step: "0.05", value: s.denoise == null ? "" : String(s.denoise), placeholder: "default", title: `How much the ${p.label} is redrawn (empty: the detailer's default)` }), "denoise", p);
+      const rs = unit(el("input", { type: "number", min: "0", max: "1", step: "0.05", value: s.restore == null ? "" : String(s.restore), placeholder: "default", title: `Detail restore for the ${p.label}: 1 keeps the original's fine texture, 0 lets the redraw replace it (to change its style). Empty: the detailer's default` }), "restore", p);
+      let label = p.label;
+      if (rb && s.on && det.enabled && p.name in (rb.found || {})) label += rb.found[p.name] ? " ✓" : "";
+      cells.push(on, el("span", { class: "mcm-chip", style: `background:${p.color}` }), el("span", { text: label }), dn, rs);
+      cells.push(el("span"), prompt);
+      if (rb && s.on && det.enabled && p.name in (rb.found || {}) && !rb.found[p.name]) {
+        cells.push(el("span"), el("span", { class: "mcm-status missing", text: "not found: try a lower threshold" }));
       }
     }
     return el("div", { class: "mrl-sec" }, [
       el("div", { class: "mrl-sec-title", text: "Parts" }),
       el("div", { class: "mcm-parts" }, cells),
-      el("div", { class: "mrl-hint", text: "Prompt and denoise are used by the detailer; changing them doesn't re-run SAM3." }),
+      el("div", { class: "mrl-hint", text: "Left and right hand as seen in the image. Prompt, denoise and restore are used by the detailer; changing them doesn't re-run SAM3." }),
     ]);
   }
 

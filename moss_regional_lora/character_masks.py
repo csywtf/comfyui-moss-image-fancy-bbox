@@ -50,6 +50,7 @@ class Part:
     sam3_prompt: str     # SAM3 text prompt; ":N" = up to N detections (comfy/text_encoders/sam3_clip.py)
     hint: str            # default detail prompt for this part
     color: str           # preview colour
+    side: str = ""       # "left" / "right": one of a pair found by one prompt, by position in the image
 
 
 # Listed in the editor's order. The detailer works coarse to fine (DETAIL_ORDER).
@@ -58,7 +59,9 @@ PARTS: Tuple[Part, ...] = (
 # outscores the real part can't push it out.
     Part("face", "face:2", "detailed face", "#ff9f1c"),
     Part("eyes", "eye:4", "detailed eyes", "#2ec4ff"),
-    Part("hands", "hand:4", "detailed hands", "#3ddc84"),
+    # one "hand" search per character; each hand is then the left or right one as seen in the image
+    Part("left_hand", "hand:4", "detailed hand", "#3ddc84", "left"),
+    Part("right_hand", "hand:4", "detailed hand", "#00a86b", "right"),
     Part("hair", "hair:2", "detailed hair", "#b77dff"),
     Part("skin", "skin:6", "detailed skin", "#ffe14d"),
 )
@@ -66,7 +69,9 @@ PART_NAMES = tuple(p.name for p in PARTS)
 PERSON_PROMPT = "person:4"
 NEUTRAL = 0.5        # what other characters' pixels are replaced with while looking for a character's parts
 PART_BY_NAME = {p.name: p for p in PARTS}
-DETAIL_ORDER = ("skin", "hair", "face", "hands", "eyes")
+DETAIL_ORDER = ("skin", "hair", "face", "left_hand", "right_hand", "eyes")
+# settings saved before hands were split into left and right apply to both
+LEGACY_PARTS = {"left_hand": "hands", "right_hand": "hands"}
 DEFAULT_PARTS_ON = ("face", "eyes")
 DETAIL_VERSION = 1
 
@@ -81,6 +86,7 @@ class PartSettings:
     on: bool
     prompt: str = ""                     # "" = the part's hint
     denoise: Optional[float] = None      # None = the detailer's default
+    restore: Optional[float] = None      # detail restoration; None = the detailer's default
 
 
 @dataclass(frozen=True)
@@ -148,9 +154,11 @@ def resolve_detail(box: BoxInfo, raw: Optional[dict]) -> BoxDetail:
     raw_parts = raw.get("parts") if isinstance(raw.get("parts"), dict) else {}
     for n in PART_NAMES:
         p = raw_parts.get(n)
+        if not isinstance(p, dict):
+            p = raw_parts.get(LEGACY_PARTS.get(n, ""))
         if isinstance(p, dict):
             parts[n] = PartSettings(on=_bool(p.get("on"), parts[n].on), prompt=_str(p.get("prompt")),
-                                    denoise=_denoise(p.get("denoise")))
+                                    denoise=_denoise(p.get("denoise")), restore=_denoise(p.get("restore")))
     return BoxDetail(enabled=_bool(raw.get("enabled"), base.enabled), prompt=_str(raw.get("prompt")),
                      use_box_loras=_bool(raw.get("use_box_loras"), True), loras=tuple(loras), parts=parts,
                      points=_points(raw.get("points")))
@@ -282,6 +290,39 @@ def clip_to_boxes(mask: torch.Tensor, boxes, grow: float = 0.08) -> torch.Tensor
         x1, y1 = min(w, int(round(x + bw + gx))), min(h, int(round(y + bh + gy)))
         keep[y0:y1, x0:x1] = True
     return mask & keep
+
+
+def split_sides(detections: Sequence[torch.Tensor], center_x: float) -> Tuple[torch.Tensor, torch.Tensor]:
+    """(left, right) masks from a pair-part's individual detections (hands), as seen in the image.
+
+    Two or more: the leftmost detection is the left one and the rightmost the right one; any others join
+    whichever is nearer. Where the two touch or overlap, the shared pixels are split at the midpoint
+    between them. One: left or right of the character's middle (``center_x``)."""
+    dets = [d for d in detections if bool(d.any())]
+    if not dets:
+        z = torch.zeros_like(detections[0]) if detections else None
+        return z, z
+    xs = torch.arange(dets[0].shape[1], dtype=torch.float32)
+    cx = [float((d.float().sum(0) * xs).sum() / d.sum()) for d in dets]
+    if len(dets) == 1:
+        z = torch.zeros_like(dets[0])
+        return (dets[0], z) if cx[0] < center_x else (z, dets[0])
+    order = sorted(range(len(dets)), key=lambda i: cx[i])
+    lc, rc = cx[order[0]], cx[order[-1]]
+    left = torch.zeros_like(dets[0])
+    right = torch.zeros_like(dets[0])
+    for i in order:
+        if abs(cx[i] - lc) <= abs(cx[i] - rc):
+            left |= dets[i]
+        else:
+            right |= dets[i]
+    both = left & right
+    if both.any():
+        mid = (lc + rc) / 2
+        on_left = (xs < mid)[None, :].expand_as(both)
+        left = left & ~(both & ~on_left)
+        right = right & ~(both & on_left)
+    return left, right
 
 
 def pick_outline(candidates: Sequence[torch.Tensor], rect: Rect) -> Optional[torch.Tensor]:
@@ -462,6 +503,19 @@ class Sam3Runner:
                           lambda: self._run(image, positive_coords=json.dumps(pos),
                                             negative_coords=json.dumps(neg) if neg else None))
 
+    def find_each(self, image: torch.Tensor, img_key: str, crop: Rect, prompt: str) -> List[torch.Tensor]:
+        """Each detection of ``prompt`` inside ``crop`` as its own bool [H, W] mask, kept inside its own
+        detector box (as :meth:`find`)."""
+        def run():
+            x0, y0, x1, y1 = crop
+            ms, boxes = self._run(image[y0:y1, x0:x1], individual=True, with_boxes=True,
+                                  conditioning=self._cond(prompt))
+            full = torch.zeros(ms.shape[0], image.shape[0], image.shape[1], dtype=torch.bool)
+            for i in range(ms.shape[0]):
+                full[i, y0:y1, x0:x1] = clip_to_boxes(ms[i], boxes[i:i + 1] if len(boxes) == ms.shape[0] else [])
+            return full
+        return list(self._memo((img_key, "each", crop, prompt), run))
+
     def find(self, image: torch.Tensor, img_key: str, crop: Rect, prompt: str) -> torch.Tensor:
         """``prompt`` found inside ``crop`` of ``image``: bool [H, W] (zero outside the crop)."""
         def run():
@@ -516,7 +570,18 @@ def mask_frame(image: torch.Tensor, boxes: Sequence[BoxInfo], details: Dict[str,
             vkey = image_key(view[y0:y1, x0:x1])
         else:
             view, vkey = image, key
-        raws.append({n: runner.find(view, vkey, crop, PART_BY_NAME[n].sam3_prompt) for n in d.parts_on()})
+        on = d.parts_on()
+        raw = {n: runner.find(view, vkey, crop, PART_BY_NAME[n].sam3_prompt) for n in on if not PART_BY_NAME[n].side}
+        paired = [n for n in on if PART_BY_NAME[n].side]
+        if paired:   # hands: each detection is the left or right one, as seen in the image
+            dets = runner.find_each(view, vkey, crop, PART_BY_NAME[paired[0]].sam3_prompt)
+            xs = torch.nonzero(outline)[:, 1]
+            center = float(xs.float().mean()) if len(xs) else (rect[0] + rect[2]) / 2
+            left, right = split_sides(dets, center)
+            for n in paired:
+                m = left if PART_BY_NAME[n].side == "left" else right
+                raw[n] = m if m is not None else torch.zeros(H, W, dtype=torch.bool)
+        raws.append(raw)
     owned = assign_parts([t[3] for t in todo], raws, [grow_radius(t[2]) for t in todo], owner)
     out = []
     for (b, d, rect, outline, found), parts in zip(todo, owned):

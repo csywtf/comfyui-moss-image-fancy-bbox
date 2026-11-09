@@ -45,6 +45,7 @@ class Pass:
     prompt: str
     loras: Tuple[Tuple[str, float], ...]       # (file, weight), applied to the model only
     denoise: float
+    restore: Optional[float] = None            # detail restoration for this part; None = the node's
 
 
 def part_prompt(b: CharacterMask, part: str) -> str:
@@ -70,8 +71,9 @@ def plan(masks: CharacterMasks, default_denoise: float, padding: float = 0.3, mi
                     continue
                 s = b.detail.parts.get(part)
                 denoise = s.denoise if s is not None and s.denoise is not None else default_denoise
+                restore = s.restore if s is not None else None
                 for piece in split_mask(m, padding, min_side, margin):
-                    yield Pass(f, b.name, part, piece, part_prompt(b, part), pass_loras(b), float(denoise))
+                    yield Pass(f, b.name, part, piece, part_prompt(b, part), pass_loras(b), float(denoise), restore)
 
 
 GRID = 256    # pieces are found on a grid this many cells across, so it stays quick on large images
@@ -267,10 +269,11 @@ def detail_frame(image: torch.Tensor, passes: Sequence[Pass], sample: Sampler, c
         result, reference = sample(big, big_mask, p, seed + k)
         back = "area" if s > 1 else "lanczos"          # area exactly undoes a whole-number upscale's size
         res = resize(result[:th, :tw, :3], w, h, back)
-        if reference is not None and restore > 0:
+        r = p.restore if p.restore is not None else restore
+        if reference is not None and r > 0:
             # keep only what the model changed: what the round trip (resizing, VAE) lost is put back
             delta = res - resize(reference[:th, :tw, :3], w, h, back)
-            res = restore * (crop + delta) + (1 - restore) * res
+            res = r * (crop + delta) + (1 - r) * res
         res = res.clamp(0, 1)
         a3 = a[..., None]
         blended = crop * (1 - a3) + res * a3
@@ -290,6 +293,11 @@ def detail(images: torch.Tensor, masks: CharacterMasks, sample: Sampler, *, deno
         out.append(detail_frame(images[f], mine, sample, crop_size, padding, max_upscale, grow, feather,
                                 seed + 1000 * f, on_pass, restore) if mine else images[f].detach().cpu().float())
     return torch.stack(out)
+
+
+def needs_reference(masks: CharacterMasks, denoise: float, restore: float) -> bool:
+    """Whether any pass restores detail (so the sampler must also decode the unredrawn crop)."""
+    return restore > 0 or any((p.restore or 0) > 0 for p in plan(masks, denoise))
 
 
 def count_passes(masks: CharacterMasks, denoise: float, padding: float = 0.3, min_side: float = 0.0,

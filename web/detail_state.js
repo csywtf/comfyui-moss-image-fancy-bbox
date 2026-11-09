@@ -8,20 +8,23 @@ export const DETAIL_VERSION = 1;
 
 // Same order, prompts' hints and colours as character_masks.py PARTS. Bit i of the label map = PARTS[i].
 export const PARTS = [
-  { name: "face", hint: "detailed face", color: "#ff9f1c" },
-  { name: "eyes", hint: "detailed eyes", color: "#2ec4ff" },
-  { name: "hands", hint: "detailed hands", color: "#3ddc84" },
-  { name: "hair", hint: "detailed hair", color: "#b77dff" },
-  { name: "skin", hint: "detailed skin", color: "#ffe14d" },
+  { name: "face", label: "face", hint: "detailed face", color: "#ff9f1c" },
+  { name: "eyes", label: "eyes", hint: "detailed eyes", color: "#2ec4ff" },
+  { name: "left_hand", label: "left hand", hint: "detailed hand", color: "#3ddc84" },   // as seen in the image
+  { name: "right_hand", label: "right hand", hint: "detailed hand", color: "#00a86b" },
+  { name: "hair", label: "hair", hint: "detailed hair", color: "#b77dff" },
+  { name: "skin", label: "skin", hint: "detailed skin", color: "#ffe14d" },
 ];
+// settings saved before hands were split into left and right apply to both
+const LEGACY_PARTS = { left_hand: "hands", right_hand: "hands" };
 export const PART_NAMES = PARTS.map((p) => p.name);
 // where parts overlap (eyes inside a face inside skin), the overlay shows the finest
-const FINEST_FIRST = ["eyes", "hands", "face", "hair", "skin"].map((n) => PART_NAMES.indexOf(n));
+const FINEST_FIRST = ["eyes", "left_hand", "right_hand", "face", "hair", "skin"].map((n) => PART_NAMES.indexOf(n));
 const DEFAULT_ON = ["face", "eyes"];
 
 export function defaultDetail(label) {
   const parts = {};
-  for (const n of PART_NAMES) parts[n] = { on: DEFAULT_ON.includes(n), prompt: "", denoise: null };
+  for (const n of PART_NAMES) parts[n] = { on: DEFAULT_ON.includes(n), prompt: "", denoise: null, restore: null };
   return { enabled: label === "character", prompt: "", use_box_loras: true, loras: [], parts, points: [] };
 }
 
@@ -61,13 +64,16 @@ export function detailFor(doc, region) {
   const raw = doc?.boxes?.[region?.id];
   if (!raw || typeof raw !== "object") return base;
   const parts = {};
+  const unit = (v) => (isNum(v) ? Math.min(1, Math.max(0, v)) : null);
   for (const n of PART_NAMES) {
-    const p = raw.parts?.[n];
+    let p = raw.parts?.[n];
+    if (!p || typeof p !== "object") p = raw.parts?.[LEGACY_PARTS[n]];
     parts[n] = p && typeof p === "object"
       ? {
           on: typeof p.on === "boolean" ? p.on : base.parts[n].on,
           prompt: typeof p.prompt === "string" ? p.prompt : "",
-          denoise: isNum(p.denoise) ? Math.min(1, Math.max(0, p.denoise)) : null,
+          denoise: unit(p.denoise),
+          restore: unit(p.restore),
         }
       : base.parts[n];
   }

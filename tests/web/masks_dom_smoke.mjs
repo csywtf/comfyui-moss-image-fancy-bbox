@@ -153,18 +153,25 @@ await row("Alice").click();
 assert.match(await page.locator(".mrl-props .mrl-panel-head").innerText(), /Detail: Alice/);
 assert.match(await page.locator(".mrl-props").innerText(), /alice \(0\.8\)/);           // the box's own LoRAs
 const parts = page.locator(".mcm-parts input[type=checkbox]");
-assert.deepEqual(await parts.evaluateAll((xs) => xs.map((x) => x.checked)), [true, true, false, false, false]);
-await parts.nth(2).check();                                                              // hands
+assert.deepEqual(await parts.evaluateAll((xs) => xs.map((x) => x.checked)), [true, true, false, false, false, false]);
+await parts.nth(2).check();                                                              // left hand
 let d = await detail();
-assert.equal(d.boxes.alice.parts.hands.on, true);
+assert.equal(d.boxes.alice.parts.left_hand.on, true);
+assert.equal(d.boxes.alice.parts.right_hand.on, false);
 assert.equal(d.boxes.alice.parts.face.on, true);
 await page.locator(".mrl-props textarea").fill("green eyes, freckles");
 await page.locator(".mrl-props textarea").press("Tab");
 assert.equal((await detail()).boxes.alice.prompt, "green eyes, freckles");
-const eyesDenoise = page.locator(".mcm-parts input[type=number]").nth(1);
-await eyesDenoise.fill("0.6");
-await eyesDenoise.press("Tab");
+// per part: denoise and restore (face denoise, face restore, eyes denoise, eyes restore, left hand ..., right hand ...)
+const numbers = page.locator(".mcm-parts input[type=number]");
+await numbers.nth(2).fill("0.6");
+await numbers.nth(2).press("Tab");
 assert.equal((await detail()).boxes.alice.parts.eyes.denoise, 0.6);
+await numbers.nth(5).fill("0");                                                          // left hand restore
+await numbers.nth(5).press("Tab");
+d = await detail();
+assert.equal(d.boxes.alice.parts.left_hand.restore, 0);
+assert.equal(d.boxes.alice.parts.right_hand.restore, null);
 await page.locator(".mrl-props button", { hasText: "Add detail LoRA" }).click();
 await page.locator(".mcm-lora input[type=text]").fill("eye_detail.safetensors");
 await page.locator(".mcm-lora input[type=text]").press("Tab");
@@ -184,8 +191,8 @@ console.log("detail settings ok");
 // 4. a run's result: masks on the preview, found / not found per part, click a mask to select its box
 await page.evaluate(() => window.node.onExecuted({ moss_character_masks: [{
   image: { filename: "img.png", subfolder: "", type: "temp" }, labels: { filename: "lab.png", subfolder: "", type: "temp" },
-  width: 200, height: 100, parts: ["face", "eyes", "hands", "hair", "skin"],
-  boxes: [{ id: "alice", name: "Alice", outline_found: true, found: { face: true, eyes: true, hands: false } },
+  width: 200, height: 100, parts: ["face", "eyes", "left_hand", "right_hand", "hair", "skin"],
+  boxes: [{ id: "alice", name: "Alice", outline_found: true, found: { face: true, eyes: true, left_hand: false } },
           { id: "bob", name: "Bob", outline_found: false, found: { face: true, eyes: false } }],
 }] }));
 await page.waitForFunction(() => /Last run: 2 box/.test(document.querySelector(".mrl-status").textContent));

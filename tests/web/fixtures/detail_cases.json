@@ -13,27 +13,38 @@
      "face": {
       "on": true,
       "prompt": "",
-      "denoise": null
+      "denoise": null,
+      "restore": null
      },
      "eyes": {
       "on": true,
       "prompt": "",
-      "denoise": null
+      "denoise": null,
+      "restore": null
      },
-     "hands": {
+     "left_hand": {
       "on": false,
       "prompt": "",
-      "denoise": null
+      "denoise": null,
+      "restore": null
+     },
+     "right_hand": {
+      "on": false,
+      "prompt": "",
+      "denoise": null,
+      "restore": null
      },
      "hair": {
       "on": false,
       "prompt": "",
-      "denoise": null
+      "denoise": null,
+      "restore": null
      },
      "skin": {
       "on": false,
       "prompt": "",
-      "denoise": null
+      "denoise": null,
+      "restore": null
      }
     },
     "points": []
@@ -51,27 +62,38 @@
      "face": {
       "on": true,
       "prompt": "",
-      "denoise": null
+      "denoise": null,
+      "restore": null
      },
      "eyes": {
       "on": true,
       "prompt": "",
-      "denoise": null
+      "denoise": null,
+      "restore": null
      },
-     "hands": {
+     "left_hand": {
       "on": false,
       "prompt": "",
-      "denoise": null
+      "denoise": null,
+      "restore": null
+     },
+     "right_hand": {
+      "on": false,
+      "prompt": "",
+      "denoise": null,
+      "restore": null
      },
      "hair": {
       "on": false,
       "prompt": "",
-      "denoise": null
+      "denoise": null,
+      "restore": null
      },
      "skin": {
       "on": false,
       "prompt": "",
-      "denoise": null
+      "denoise": null,
+      "restore": null
      }
     },
     "points": []
@@ -104,6 +126,13 @@
      },
      "tail": {
       "on": true
+     },
+     "face": {
+      "restore": 0.4
+     },
+     "right_hand": {
+      "on": false,
+      "restore": 1.5
      }
     },
     "x_unknown": 1,
@@ -138,27 +167,38 @@
      "face": {
       "on": true,
       "prompt": "",
-      "denoise": null
+      "denoise": null,
+      "restore": 0.4
      },
      "eyes": {
       "on": false,
       "prompt": "",
-      "denoise": null
+      "denoise": null,
+      "restore": null
      },
-     "hands": {
+     "left_hand": {
       "on": true,
       "prompt": "five fingers",
-      "denoise": 0.5
+      "denoise": 0.5,
+      "restore": null
+     },
+     "right_hand": {
+      "on": false,
+      "prompt": "",
+      "denoise": null,
+      "restore": 1.0
      },
      "hair": {
       "on": false,
       "prompt": "",
-      "denoise": null
+      "denoise": null,
+      "restore": null
      },
      "skin": {
       "on": false,
       "prompt": "",
-      "denoise": 1
+      "denoise": 1,
+      "restore": null
      }
     },
     "points": [
