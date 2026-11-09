@@ -12,7 +12,7 @@ import { api } from "../../scripts/api.js";
 import * as G from "./geometry.js";
 import * as S from "./state.js";
 import * as D from "./detail_state.js";
-import { el, hideWidget, injectCss, loraDisplayName, loraList, zoomButtons, zoomKey } from "./regional_lora_editor.js";
+import { el, hideWidget, injectCss, loraDisplayName, loraList, rememberHeight, zoomButtons, zoomKey } from "./regional_lora_editor.js";
 import { Viewport, frameRect, installKeySink, installPanZoom, isKeySink, trackSize } from "./viewport.js";
 import * as P from "./paint.js";
 
@@ -628,7 +628,7 @@ class MasksEditor {
     const on = el("input", { type: "checkbox" });
     on.checked = det.enabled;
     on.addEventListener("change", () => this.updateDetail(region, (x) => (x.enabled = on.checked)));
-    const prompt = el("textarea", { placeholder: "Added to every part's prompt, e.g. green eyes, freckles" });
+    const prompt = rememberHeight(el("textarea", { placeholder: "Added to every part's prompt, e.g. green eyes, freckles" }), "detailPrompt");
     prompt.value = det.prompt;
     prompt.addEventListener("change", () => this.updateDetail(region, (x) => (x.prompt = prompt.value)));
     const rb = this.resultBox(region.id);
