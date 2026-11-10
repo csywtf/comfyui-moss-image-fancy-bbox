@@ -48,13 +48,19 @@ const CSS = `
 .mcm-dots{display:flex;gap:2px}
 .mcm-dot{width:8px;height:8px;border-radius:50%;border:1px solid rgba(0,0,0,.4)}
 .mcm-dot.missing{background:transparent!important;border:1px dashed #f88}
-.mcm-parts{display:grid;grid-template-columns:auto 10px 1fr 68px 68px 34px;gap:3px 4px;align-items:center}
-.mcm-parts input[type=text]{min-width:0;width:100%;grid-column:2 / -1;margin-bottom:4px}
-.mcm-parts input[type=number]{width:68px}
-.mcm-col{font-size:10px;opacity:.65;text-align:center}
-.mcm-parts input[type=checkbox].mcm-crop{justify-self:center}
+.mcm-parts{display:flex;flex-direction:column;gap:1px}
+.mcm-part{display:flex;align-items:center;gap:5px;padding:1px 2px;border-radius:3px}
+.mcm-part.open{background:rgba(80,140,255,.18)}
+.mcm-part .grow,.mcm-part-name{cursor:pointer}
+.mcm-part .grow{flex:1;align-self:stretch}
+.mcm-mod{font-size:10px;padding:0 4px;border-radius:3px;background:rgba(80,140,255,.35)}
+.mcm-panel{margin:1px 0 6px 18px;padding:5px 6px;border:1px solid #6af;border-radius:4px;display:flex;flex-direction:column;gap:4px}
+.mcm-panel-head{display:flex;align-items:center;gap:6px;font-size:11px;opacity:.9}
+.mcm-panel-head .grow{flex:1}
+.mrl-props .mcm-panel textarea{min-height:56px;resize:vertical;width:100%;box-sizing:border-box;flex:none}
+.mcm-panel input[type=number]{width:72px}
 .mcm-chip{width:10px;height:10px;border-radius:2px}
-.mcm-status{font-size:10px;opacity:.8;grid-column:2 / -1;margin-top:-2px}
+.mcm-status{font-size:10px;opacity:.8;margin:-1px 0 2px 20px}
 .mcm-status.missing{color:#f99;opacity:1}
 .mcm-loras{display:flex;flex-direction:column;gap:3px}
 .mcm-lora{display:flex;gap:3px;align-items:center}
@@ -673,38 +679,72 @@ class MasksEditor {
   partsSection(region) {
     const det = this.detailOf(region);
     const rb = this.resultBox(region.id);
-    const cells = [el("span"), el("span"), el("span"), el("span", { class: "mcm-col", text: "denoise" }), el("span", { class: "mcm-col", text: "restore" }), el("span", { class: "mcm-col", text: "crop", title: "Redraw the whole crop around the part, not just the part (only the part is pasted back)" })];
-    const unit = (input, key, p) => {
+    const rows = [];
+    for (const p of D.PARTS) {
+      const s = det.parts[p.name];
+      const on = el("input", { type: "checkbox", class: "mcm-on", title: `Mask and detail the ${p.label}` });
+      on.checked = s.on;
+      on.addEventListener("change", () => this.updateDetail(region, (x) => (x.parts[p.name].on = on.checked)));
+      const known = rb && s.on && det.enabled && p.name in (rb.found || {});
+      const open = this.openPart === p.name;
+      const edited = !!(s.full_prompt || s.denoise != null || s.restore != null || s.whole_crop);
+      const toggle = () => {
+        this.openPart = open ? null : p.name;
+        this.renderProps();
+      };
+      rows.push(
+        el("div", { class: `mcm-part${open ? " open" : ""}`, "data-part": p.name }, [
+          on,
+          el("span", { class: "mcm-chip", style: `background:${p.color}` }),
+          el("span", { class: "mcm-part-name", text: p.label + (known && rb.found[p.name] ? " ✓" : ""), onclick: toggle }),
+          edited ? el("span", { class: "mcm-mod", text: "edited", title: "This part has its own prompt or detail settings" }) : null,
+          el("span", { class: "grow", onclick: toggle }),
+          el("button", { class: "mrl-mini mcm-edit", icon: open ? "chevron-down" : "chevron-right", title: `${open ? "Close" : "Edit"} the ${p.label}'s prompt and detail settings`, onclick: toggle }),
+        ]),
+      );
+      if (known && !rb.found[p.name]) rows.push(el("div", { class: "mcm-status missing", text: "not found: try a lower threshold" }));
+      if (open) rows.push(this.partPanel(region, det, p));
+    }
+    return el("div", { class: "mrl-sec" }, [
+      el("div", { class: "mrl-sec-title", text: "Parts" }),
+      el("div", { class: "mcm-parts" }, rows),
+      el("div", { class: "mrl-hint", text: "Left and right hand as seen in the image. A part's prompt and settings are used by the detailer only; changing them doesn't re-run SAM3." }),
+    ]);
+  }
+
+  /** A part's settings, open under its row: the prompt its detail pass will use, denoise, restore, crop. */
+  partPanel(region, det, p) {
+    const s = det.parts[p.name];
+    const auto = D.autoPrompt(region.caption, det, p.name);
+    const prompt = rememberHeight(el("textarea", { class: "mcm-part-prompt", title: `The ${p.label}'s detail prompt, sent as written. Edit it to leave out details you don't want redrawn here.` }), "partPrompt");
+    prompt.value = D.partPrompt(region.caption, det, p.name);
+    const reset = el("button", { class: "mrl-mini", text: "Reset prompt", title: `Back to the automatic prompt: "${auto}"` });
+    const sync = () => (reset.disabled = prompt.value.trim() === auto);
+    sync();
+    prompt.addEventListener("input", sync);
+    prompt.addEventListener("change", () => {
+      const v = prompt.value.trim();
+      // empty or unchanged: automatic again (it follows later caption and detail prompt edits)
+      this.updateDetail(region, (x) => (x.parts[p.name].full_prompt = v && v !== auto ? prompt.value : null));
+    });
+    reset.addEventListener("click", () => this.updateDetail(region, (x) => (x.parts[p.name].full_prompt = null)));
+    const unit = (key, title) => {
+      const input = el("input", { type: "number", min: "0", max: "1", step: "0.05", class: `mcm-${key}`, value: s[key] == null ? "" : String(s[key]), placeholder: "default", title });
       input.addEventListener("change", () => {
         const v = input.value.trim() === "" ? null : Math.min(1, Math.max(0, Number(input.value)));
         if (v === null || Number.isFinite(v)) this.updateDetail(region, (x) => (x.parts[p.name][key] = v));
       });
       return input;
     };
-    for (const p of D.PARTS) {
-      const s = det.parts[p.name];
-      const on = el("input", { type: "checkbox", title: `Mask and detail the ${p.label}` });
-      on.checked = s.on;
-      on.addEventListener("change", () => this.updateDetail(region, (x) => (x.parts[p.name].on = on.checked)));
-      const prompt = el("input", { type: "text", value: s.prompt, placeholder: p.hint, title: `Prompt for the ${p.label} (empty: "${p.hint}")` });
-      prompt.addEventListener("change", () => this.updateDetail(region, (x) => (x.parts[p.name].prompt = prompt.value)));
-      const dn = unit(el("input", { type: "number", min: "0", max: "1", step: "0.05", value: s.denoise == null ? "" : String(s.denoise), placeholder: "default", title: `How much the ${p.label} is redrawn (empty: the detailer's default)` }), "denoise", p);
-      const rs = unit(el("input", { type: "number", min: "0", max: "1", step: "0.05", value: s.restore == null ? "" : String(s.restore), placeholder: "default", title: `Detail restore for the ${p.label}: 1 keeps the original's fine texture, 0 lets the redraw replace it (to change its style). Empty: the detailer's default` }), "restore", p);
-      let label = p.label;
-      if (rb && s.on && det.enabled && p.name in (rb.found || {})) label += rb.found[p.name] ? " ✓" : "";
-      const wc = el("input", { type: "checkbox", class: "mcm-crop", title: `Whole crop: redraw the ${p.label} together with its surroundings, then paste back only the ${p.label}. Use it to change the part's style (anime to realistic, say): otherwise the unchanged surroundings pull the redraw back to the old look. Pair it with a high denoise.` });
-      wc.checked = !!s.whole_crop;
-      wc.addEventListener("change", () => this.updateDetail(region, (x) => (x.parts[p.name].whole_crop = wc.checked)));
-      cells.push(on, el("span", { class: "mcm-chip", style: `background:${p.color}` }), el("span", { text: label }), dn, rs, wc);
-      cells.push(el("span"), prompt);
-      if (rb && s.on && det.enabled && p.name in (rb.found || {}) && !rb.found[p.name]) {
-        cells.push(el("span"), el("span", { class: "mcm-status missing", text: "not found: try a lower threshold" }));
-      }
-    }
-    return el("div", { class: "mrl-sec" }, [
-      el("div", { class: "mrl-sec-title", text: "Parts" }),
-      el("div", { class: "mcm-parts" }, cells),
-      el("div", { class: "mrl-hint", text: "Left and right hand as seen in the image. Prompt, denoise, restore and crop are used by the detailer; changing them doesn't re-run SAM3. Crop: redraw the part's surroundings too (only the part is pasted back), to change its style; use a high denoise with it." }),
+    const crop = el("input", { type: "checkbox", class: "mcm-crop" });
+    crop.checked = !!s.whole_crop;
+    crop.addEventListener("change", () => this.updateDetail(region, (x) => (x.parts[p.name].whole_crop = crop.checked)));
+    return el("div", { class: "mcm-panel" }, [
+      el("div", { class: "mcm-panel-head" }, [el("span", { class: "grow", text: "Prompt" }), reset]),
+      prompt,
+      this.field("Denoise", unit("denoise", ""), `How much the ${p.label} is redrawn (empty: the detailer's default)`),
+      this.field("Restore", unit("restore", ""), `Detail restore for the ${p.label}: 1 keeps the original's fine texture, 0 lets the redraw replace it (to change its style). Empty: the detailer's default`),
+      this.field("Whole crop", crop, `Redraw the ${p.label} together with its surroundings, then paste back only the ${p.label}. Use it to change the part's style (anime to realistic, say): otherwise the unchanged surroundings pull the redraw back to the old look. Pair it with a high denoise.`),
     ]);
   }
 

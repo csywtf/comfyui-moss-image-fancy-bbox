@@ -24,7 +24,7 @@ const DEFAULT_ON = ["face", "eyes"];
 
 export function defaultDetail(label) {
   const parts = {};
-  for (const n of PART_NAMES) parts[n] = { on: DEFAULT_ON.includes(n), prompt: "", denoise: null, restore: null, whole_crop: false };
+  for (const n of PART_NAMES) parts[n] = { on: DEFAULT_ON.includes(n), prompt: "", denoise: null, restore: null, whole_crop: false, full_prompt: null };
   return { enabled: label === "character", prompt: "", use_box_loras: true, loras: [], parts, paint: {} };
 }
 
@@ -97,6 +97,7 @@ export function detailFor(doc, region) {
           denoise: unit(p.denoise),
           restore: unit(p.restore),
           whole_crop: typeof p.whole_crop === "boolean" ? p.whole_crop : false,
+          full_prompt: typeof p.full_prompt === "string" && p.full_prompt.trim() ? p.full_prompt : null,
         }
       : base.parts[n];
   }
@@ -224,4 +225,18 @@ export function partTags(labels, w, h) {
     out.push({ box: a.box, part: a.part, text: TAGGED_PARTS[PART_NAMES[a.part]], x: a.pts[best] + 0.5, y: a.pts[best + 1] + 0.5 });
   }
   return out.sort((p, q) => p.box - q.box || p.part - q.part);
+}
+
+/** The automatic prompt of a part's detail pass: the box's caption, its detail prompt, then the part's own
+ * prompt or its hint. Same as autoPrompt in moss_regional_lora/detailer.py (shared fixture). */
+export function autoPrompt(caption, detail, partName) {
+  const part = PARTS.find((p) => p.name === partName);
+  const own = (detail?.parts?.[partName]?.prompt || "").trim() || part?.hint || "";
+  return [(caption || "").trim(), (detail?.prompt || "").trim(), own].filter((t) => t).join(", ");
+}
+
+/** The prompt the detailer will use for a part: its edited prompt, or else the automatic one. */
+export function partPrompt(caption, detail, partName) {
+  const edited = detail?.parts?.[partName]?.full_prompt;
+  return typeof edited === "string" && edited.trim() ? edited.trim() : autoPrompt(caption, detail, partName);
 }

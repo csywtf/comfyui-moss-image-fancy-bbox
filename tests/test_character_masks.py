@@ -2,6 +2,7 @@
 replaced by a fake that "finds" known rectangles."""
 
 import json
+import os
 import sys
 import types
 
@@ -560,7 +561,7 @@ def test_detail_resolution_matches_the_editor():
                "loras": [list(e) for e in d.loras],
                "paint": sorted(d.paint),
                "parts": {n: {"on": p.on, "prompt": p.prompt, "denoise": p.denoise, "restore": p.restore,
-                                   "whole_crop": p.whole_crop}
+                                   "whole_crop": p.whole_crop, "full_prompt": p.full_prompt}
                          for n, p in d.parts.items()}}
         assert got == case["expected"], case
     assert [p.name for p in cm.PARTS] == ["face", "eyes", "left_hand", "right_hand", "hair", "skin"]
@@ -627,3 +628,18 @@ def test_runner_find_each_returns_each_detection(fake_sam3):
     c = fake_sam3.calls[-1]
     assert c["individual"] is True and c["cond"] == [["cond:hand:4", {}]]
     assert len(each) == 2 and each[0][30:32, 100:103].all() and each[1][89, 159] and each[1].sum() == 1
+
+
+def test_part_prompts_match_the_editor():
+    """The prompt a pass uses, automatic or edited, as web/detail_state.js builds it (shared fixture)."""
+    from moss_regional_lora import detailer as dt
+    path = os.path.join(os.path.dirname(__file__), "web", "fixtures", "detail_cases.json")
+    for case in json.load(open(path))["prompts"]:
+        info = box("x", [0, 0, 1, 1], label="character")
+        d = cm.resolve_detail(info, case["stored"])
+        m = cm.CharacterMask(id="x", name="x", label="character", caption=case["caption"], color="#fff", loras=(),
+                             detail=d, rect=(0, 0, 1, 1), outline=torch.zeros(1, 1, dtype=torch.bool),
+                             outline_found=True, parts={}, found={})
+        s = d.parts[case["part"]]
+        assert dt.auto_prompt(case["caption"], d.prompt, s.prompt, case["part"]) == case["auto"], case
+        assert dt.part_prompt(m, case["part"]) == case["used"], case

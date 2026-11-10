@@ -67,7 +67,7 @@ test("overlay: selected box strong, others faint, finest part on top, nothing wh
 test("settings saved for 'hands' apply to both hands until one is edited", () => {
   const doc = { version: 1, boxes: { a: { parts: { hands: { on: true, denoise: 0.5 } } } } };
   const d = D.detailFor(doc, { id: "a", label: "character" });
-  assert.deepEqual(d.parts.left_hand, { on: true, prompt: "", denoise: 0.5, restore: null, whole_crop: false });
+  assert.deepEqual(d.parts.left_hand, { on: true, prompt: "", denoise: 0.5, restore: null, whole_crop: false, full_prompt: null });
   assert.deepEqual(d.parts.right_hand, d.parts.left_hand);
   d.parts.right_hand.restore = 0;
   const next = D.detailFor(D.setDetail(doc, "a", d), { id: "a", label: "character" });
@@ -112,4 +112,14 @@ test("hands: distinct colours, L/R tags on a pixel of each hand, partAt picks th
   assert.equal(D.partAt(labels, (1 * w + 3) * 4), null);                             // nobody
   const both = new Uint8ClampedArray([1, (1 << D.PART_NAMES.indexOf("face")) | (1 << D.PART_NAMES.indexOf("eyes")), 255, 255]);
   assert.equal(D.PARTS[D.partAt(both, 0).part].name, "eyes");
+});
+
+test("part prompts: automatic and edited, as the detailer builds them (shared fixture)", () => {
+  const prompts = JSON.parse(readFileSync(fileURLToPath(new URL("./fixtures/detail_cases.json", import.meta.url)), "utf8")).prompts;
+  for (const c of prompts) {
+    const doc = c.stored ? { version: 1, boxes: { x: c.stored } } : D.emptyDoc();
+    const d = D.detailFor(doc, { id: "x", label: "character" });
+    assert.equal(D.autoPrompt(c.caption, d, c.part), c.auto, JSON.stringify(c));
+    assert.equal(D.partPrompt(c.caption, d, c.part), c.used, JSON.stringify(c));
+  }
 });

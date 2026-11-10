@@ -54,10 +54,19 @@ class Pass:
     keep_out: Optional[torch.Tensor] = None    # bool [H, W]: other characters' pixels, never redrawn by this pass
 
 
+def auto_prompt(caption: str, box_prompt: str, part_prompt_text: str, part: str) -> str:
+    """The automatic prompt: caption, then the box's detail prompt, then the part's prompt (or its hint).
+    Mirrored by web/detail_state.js autoPrompt (shared fixture)."""
+    text = part_prompt_text.strip() or PART_BY_NAME[part].hint
+    return ", ".join(t for t in (caption.strip(), box_prompt.strip(), text) if t)
+
+
 def part_prompt(b: CharacterMask, part: str) -> str:
-    """Caption, then the box's detail prompt, then the part's prompt (or its hint)."""
-    text = b.detail.parts[part].prompt.strip() or PART_BY_NAME[part].hint
-    return ", ".join(t for t in (b.caption.strip(), b.detail.prompt.strip(), text) if t)
+    """The part's prompt as edited in the editor, or else the automatic one."""
+    s = b.detail.parts[part]
+    if s.full_prompt:
+        return s.full_prompt.strip()
+    return auto_prompt(b.caption, b.detail.prompt, s.prompt, part)
 
 
 def pass_loras(b: CharacterMask) -> Tuple[Tuple[str, float], ...]:
