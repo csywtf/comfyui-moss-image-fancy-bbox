@@ -102,6 +102,9 @@ class BoxDetail:
     parts: Dict[str, PartSettings] = field(default_factory=dict)
     # painted layers: {"character" | part name: (stored + layer, stored - layer)}, see decode_paint
     paint: Dict[str, Tuple[Optional[dict], Optional[dict]]] = field(default_factory=dict)
+    # the LoRAs used while detailing, as edited in the editor; None = the box's own LoRAs (older settings:
+    # the box's own unless use_box_loras is off, plus the detail-only ``loras``)
+    lora_list: Optional[Tuple[Tuple[str, float], ...]] = None
 
     def parts_on(self) -> List[str]:
         return [n for n in PART_NAMES if self.parts.get(n, PartSettings(False)).on]
@@ -147,17 +150,23 @@ def _full_prompt(v) -> Optional[str]:
     return v if isinstance(v, str) and v.strip() else None
 
 
+def _lora_entries(raw) -> List[Tuple[str, float]]:
+    out = []
+    for e in raw or []:
+        if isinstance(e, dict) and isinstance(e.get("lora"), str) and e["lora"]:
+            w = e.get("weight", 1.0)
+            if not isinstance(w, bool) and isinstance(w, (int, float)) and w != 0:
+                out.append((e["lora"], float(w)))
+    return out
+
+
 def resolve_detail(box: BoxInfo, raw: Optional[dict]) -> BoxDetail:
     """A box's settings: what the editor stored for it, over the defaults for its label."""
     base = default_detail(box.label)
     if not raw:
         return base
-    loras = []
-    for e in raw.get("loras") or []:
-        if isinstance(e, dict) and isinstance(e.get("lora"), str) and e["lora"]:
-            w = e.get("weight", 1.0)
-            if not isinstance(w, bool) and isinstance(w, (int, float)) and w != 0:
-                loras.append((e["lora"], float(w)))
+    loras = _lora_entries(raw.get("loras"))
+    lora_list = tuple(_lora_entries(raw["lora_list"])) if isinstance(raw.get("lora_list"), list) else None
     parts = dict(base.parts)
     raw_parts = raw.get("parts") if isinstance(raw.get("parts"), dict) else {}
     for n in PART_NAMES:
@@ -171,7 +180,7 @@ def resolve_detail(box: BoxInfo, raw: Optional[dict]) -> BoxDetail:
                                     full_prompt=_full_prompt(p.get("full_prompt")))
     return BoxDetail(enabled=_bool(raw.get("enabled"), base.enabled), prompt=_str(raw.get("prompt")),
                      use_box_loras=_bool(raw.get("use_box_loras"), True), loras=tuple(loras), parts=parts,
-                     paint=_paint(raw.get("paint")))
+                     paint=_paint(raw.get("paint")), lora_list=lora_list)
 
 
 PAINT_TARGETS = ("character",) + PART_NAMES

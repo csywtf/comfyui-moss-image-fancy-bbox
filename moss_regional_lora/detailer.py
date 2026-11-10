@@ -10,9 +10,9 @@ as its own pass on the image so far:
    Either way it is padded (not resized) to whole 16 px latent cells.
    A part in pieces far apart (hands on either side of the body) is detailed as one pass per group of
    pieces whose crops would overlap, so each gets its own upscaled crop; two eyes stay one pass.
-2. **Re-sample** it with a noise mask, so only the part changes: the prompt is the box's caption, the
-   box's detail prompt and the part's prompt (or its hint, "detailed eyes"); the LoRAs are the box's own
-   (unless turned off) plus its detail-only LoRAs; the denoise is the part's own or the node default.
+2. **Re-sample** it with a noise mask, so only the part changes: the prompt is the part's own, as written
+   in the Character Masks editor (required); the LoRAs are the box's list as edited there (by default the
+   box's own LoRAs); the denoise is the part's own or the node default.
    A part set to *whole crop* is re-sampled without the noise mask: its surroundings are redrawn too,
    so they don't pull it back to the old style (only the part is pasted back, step 4).
 3. **Scale back** by area averaging (the exact inverse of a whole-number upscale's size) and **restore
@@ -54,23 +54,28 @@ class Pass:
     keep_out: Optional[torch.Tensor] = None    # bool [H, W]: other characters' pixels, never redrawn by this pass
 
 
-def auto_prompt(caption: str, box_prompt: str, part_prompt_text: str, part: str) -> str:
-    """The automatic prompt: caption, then the box's detail prompt, then the part's prompt (or its hint).
-    Mirrored by web/detail_state.js autoPrompt (shared fixture)."""
-    text = part_prompt_text.strip() or PART_BY_NAME[part].hint
-    return ", ".join(t for t in (caption.strip(), box_prompt.strip(), text) if t)
-
-
 def part_prompt(b: CharacterMask, part: str) -> str:
-    """The part's prompt as edited in the editor, or else the automatic one."""
+    """The part's prompt, exactly as written in the editor ("" = none yet: the detailer refuses to run)."""
     s = b.detail.parts[part]
-    if s.full_prompt:
-        return s.full_prompt.strip()
-    return auto_prompt(b.caption, b.detail.prompt, s.prompt, part)
+    return (s.full_prompt or "").strip()
 
 
 def pass_loras(b: CharacterMask) -> Tuple[Tuple[str, float], ...]:
+    """The LoRAs for the box's passes: its edited list, or else the box's own LoRAs (with older settings,
+    the box's own unless turned off, plus the detail-only ones). Mirrored by detail_state.js detailLoras."""
+    if b.detail.lora_list is not None:
+        return tuple(b.detail.lora_list)
     return (tuple(b.loras) if b.detail.use_box_loras else ()) + tuple(b.detail.loras)
+
+
+def missing_prompts(passes: Sequence[Pass]) -> List[str]:
+    """"box: part" for every pass without a prompt, in order, each once."""
+    out: List[str] = []
+    for p in passes:
+        name = f"{p.box}: {p.part.replace('_', ' ')}"
+        if not p.prompt and name not in out:
+            out.append(name)
+    return out
 
 
 def describe_pass(p: Pass) -> str:

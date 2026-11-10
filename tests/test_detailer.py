@@ -30,10 +30,14 @@ def character(name, parts, caption="", detail=None, loras=()):
 def two_characters():
     alice = character("alice", {"eyes": (40, 40, 60, 46), "face": (30, 30, 70, 80), "skin": (20, 20, 90, 190)},
                       caption="a tall woman", loras=[("alice.safetensors", 0.8)],
-                      detail={"prompt": "green eyes", "loras": [{"lora": "eye_detail.safetensors", "weight": 0.5}],
-                              "parts": {"eyes": {"denoise": 0.6}, "face": {"prompt": "smiling"}, "skin": {"on": True}}})
+                      detail={"loras": [{"lora": "eye_detail.safetensors", "weight": 0.5}],
+                              "parts": {"eyes": {"denoise": 0.6, "full_prompt": "green eyes, detailed"},
+                                        "face": {"full_prompt": "a smiling face"},
+                                        "skin": {"on": True, "full_prompt": "pale skin"}}})
     bob = character("bob", {"face": (200, 30, 240, 80), "left_hand": (210, 150, 230, 170)},
-                    detail={"use_box_loras": False, "parts": {"left_hand": {"on": True}}}, loras=[("bob.safetensors", 1.0)])
+                    detail={"lora_list": [], "parts": {"face": {"full_prompt": "a bearded face"},
+                                                        "left_hand": {"on": True}}},
+                    loras=[("bob.safetensors", 1.0)])
     bob.parts["left_hand"] = torch.zeros(H, W, dtype=torch.bool)   # not found: skipped
     return cm.CharacterMasks([cm.FrameMasks(W, H, [alice, bob])])
 
@@ -43,9 +47,9 @@ def test_plan_order_prompts_loras_and_denoise():
     passes = list(dt.plan(two_characters(), 0.35))
     assert [(p.box, p.part) for p in passes] == [("alice", "skin"), ("alice", "face"), ("alice", "eyes"), ("bob", "face")]
     skin, face, eyes, bob_face = passes
-    assert face.prompt == "a tall woman, green eyes, smiling"
-    assert eyes.prompt == "a tall woman, green eyes, detailed eyes"       # empty part prompt: the hint
-    assert bob_face.prompt == "detailed face"                             # no caption, no detail prompt
+    assert face.prompt == "a smiling face"                                # exactly as written
+    assert eyes.prompt == "green eyes, detailed"
+    assert bob_face.prompt == "a bearded face"
     assert eyes.loras == (("alice.safetensors", 0.8), ("eye_detail.safetensors", 0.5))
     assert bob_face.loras == ()                                           # box LoRAs turned off
     assert (eyes.denoise, face.denoise, skin.denoise) == (0.6, 0.35, 0.35)
@@ -53,7 +57,7 @@ def test_plan_order_prompts_loras_and_denoise():
     line = dt.describe_pass(eyes)
     assert line.startswith("alice eyes (denoise 0.60;")
     assert "LoRAs: alice.safetensors 0.8, eye_detail.safetensors 0.5" in line
-    assert line.endswith("prompt: a tall woman, green eyes, detailed eyes)")
+    assert line.endswith("prompt: green eyes, detailed)")
     assert "LoRAs: none" in dt.describe_pass(bob_face)
 
 
@@ -289,11 +293,11 @@ def test_node_samples_each_part_with_its_loras_prompt_and_negative(fake_comfy):
     ks = calls["ksampler"]
     assert len(ks) == 4 and [k["seed"] for k in ks] == [5, 6, 7, 8]
     assert all(k["negative"] == "NEG" and k["steps"] == 12 and k["cfg"] == 4.5 for k in ks)
-    assert ks[2]["positive"] == [["cond:a tall woman, green eyes, detailed eyes", {}]] and ks[2]["denoise"] == 0.6
+    assert ks[2]["positive"] == [["cond:green eyes, detailed", {}]] and ks[2]["denoise"] == 0.6
     # alice: box + detail LoRAs, matched through the main node's key map ("transformer.lin" -> the layer)
     assert ks[0]["model"].patches == [({"diffusion_model.lin.weight": "patch:alice.safetensors"}, 0.8),
                                       ({"diffusion_model.lin.weight": "patch:eye_detail.safetensors"}, 0.5)]
-    assert ks[0]["model"] is ks[1]["model"] and ks[3]["model"] is args["model"]     # bob: box LoRAs off
+    assert ks[0]["model"] is ks[1]["model"] and ks[3]["model"] is args["model"]     # bob: LoRA list emptied
     assert calls["lora"] == ["alice.safetensors", "eye_detail.safetensors"]          # patched once, reused
     assert args["model"].patches == []                                                # the input isn't touched
     for k in ks:                                                    # noise mask at pixel size, latent 1/16
@@ -382,7 +386,8 @@ def test_hands_far_apart_get_their_own_passes_and_upscaled_crops():
 
 def test_node_warns_when_a_lora_matches_no_layer(fake_comfy, caplog):
     node_mod, calls = fake_comfy
-    alice = character("alice", {"face": (30, 30, 70, 80)}, loras=[("other_model.safetensors", 1.0)])
+    alice = character("alice", {"face": (30, 30, 70, 80)}, loras=[("other_model.safetensors", 1.0)],
+                      detail={"parts": {"face": {"full_prompt": "a face"}}})
     masks = cm.CharacterMasks([cm.FrameMasks(W, H, [alice])])
     run_node(node_mod, masks)
     assert "no layer of the model matched other_model.safetensors" in caplog.text
@@ -486,3 +491,16 @@ def test_pass_previews_show_each_crop_before_and_after():
     batch = dt.stack_previews(keep)
     assert batch.shape[0] == 4 and batch.shape[1] == max(t.shape[0] for t in keep)
     assert dt.stack_previews([]).shape == (1, 64, 64, 3)
+
+
+def test_node_refuses_to_run_with_parts_missing_a_prompt(fake_comfy):
+    node_mod, calls = fake_comfy
+    masks = two_characters()
+    masks.frames[0].boxes[0].detail.parts["face"] = cm.PartSettings(on=True)        # alice's face: no prompt
+    masks.frames[0].boxes[1].parts["left_hand"] = torch.zeros(H, W, dtype=torch.bool)  # bob's hand: not found
+    with pytest.raises(ValueError) as e:
+        run_node(node_mod, masks)
+    assert "alice: face" in str(e.value) and "left hand" not in str(e.value)    # only parts that would run
+    assert calls["ksampler"] == []                                               # nothing detailed
+    (out, _), _ = run_node(node_mod, masks, stop_before_detailing=True)          # stopping first still works
+    assert type(out).__name__ == "ExecutionBlocker"

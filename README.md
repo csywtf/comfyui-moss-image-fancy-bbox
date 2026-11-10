@@ -273,16 +273,19 @@ and the zoom buttons, with the same zoom and pan controls as the main editor):
   (dashed red: not found).
 - **Preview** (middle): the last run's image with the masks tinted by part; the selected box is bright,
   the others faint. Click a character to select its box.
-- **Detail** (right, for the selected box): Detail on/off; a detail prompt added to every part's prompt
-  (a trigger word, "green eyes"); whether to use the box's own LoRAs; detail-only LoRAs; and per part a
-  checkbox, with "found" / "not found" after a run, and an edit button (or click its name) that opens
-  the part's settings under its row, one part at a time; parts with their own settings are marked
-  *edited*:
-  - **Prompt**: the exact prompt the part's detail pass will use, prefilled with the automatic one (the
-    box's caption, its detail prompt, then "detailed face" and so on). Edit it to leave out details you
-    don't want redrawn there (the shirt in a hand's prompt, say); it is then sent as written, and no
-    longer follows later caption edits. **Reset prompt** (enabled once it differs) goes back to the
-    automatic prompt.
+- **Detail** (right, for the selected box): Detail on/off and the box's caption; **LoRAs**, the list used
+  while detailing this box, which starts as the box's own LoRAs and weights: change a weight, remove one
+  or add others like any list, and **Reset LoRAs** (enabled once it differs) goes back to the box's
+  own; and per part a checkbox, with "found" / "not found" after a run, and an edit button (or click its
+  name) that opens the part's settings under its row, one part at a time (parts with their own denoise,
+  restore or crop are marked *edited*):
+  - **Character prompt**: the box's caption, read-only, to refer to while writing the part's prompt.
+  - **Prompt** (required): the part's detail prompt, sent exactly as written. Describe just that part,
+    e.g. "close-up of a detailed realistic hand resting on a hip, short purple fingernails", leaving out
+    the rest of the character. Every ticked part of a detailed box needs one: until then the part is
+    marked *needs a prompt*, the box gets a red **!** in the list, the status line counts them, and the
+    detailer stops with the list of missing ones (the masks still run, so you can write them while
+    looking at the masks).
   - **Denoise** and **Restore** (empty: the detailer's defaults).
   - **Whole crop**: redraw the part together with its surroundings and paste back only the part;
     without it the unchanged surroundings pull the redraw back to the old look, so tick it to change a
@@ -329,10 +332,10 @@ fine (skin, hair, face, hands, eyes), each as its own pass on the image so far:
    A part in pieces far apart (two hands on either side of the body, skin on an arm and a midriff) is
    detailed as one pass per group of pieces whose crops would overlap, so each gets its own upscaled
    crop; two eyes stay one pass.
-2. **Re-sample** it with a noise mask, so only the part changes. Prompt: the box's caption, the box's
-   detail prompt and the part's prompt (empty: "detailed face" and so on), all set in the Character Masks
-   editor. LoRAs: the box's own (unless *Box LoRAs* is off) plus its detail-only LoRAs, applied to the
-   model only, as the main node does, and matched to the model's layers the same way the main node
+2. **Re-sample** it with a noise mask, so only the part changes. Prompt: the part's own prompt from the
+   Character Masks editor, exactly as written (required: before detailing anything, the detailer stops
+   with an error naming every part that would be detailed but has no prompt). LoRAs: the box's LoRA list
+   from the editor (by default the box's own LoRAs), applied to the model only, as the main node does, and matched to the model's layers the same way the main node
    matches them (so a LoRA that works there works here; a LoRA that matches no layer is logged). Denoise: the part's own, or the node's `denoise` (0.35). Seed:
    `seed` plus the pass number.
 3. **Scale back** by area averaging (exact for a whole-number upscale) and **restore detail**: the crop

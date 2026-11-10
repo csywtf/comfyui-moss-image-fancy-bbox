@@ -194,43 +194,44 @@ console.log("settings ok");
 // 3. per-box detail settings land in the hidden widget
 await row("Alice").click();
 assert.match(await page.locator(".mrl-props .mrl-panel-head").innerText(), /Detail: Alice/);
-assert.match(await page.locator(".mrl-props").innerText(), /alice \(0\.8\)/);           // the box's own LoRAs
 const parts = page.locator(".mcm-parts input.mcm-on");
 assert.deepEqual(await parts.evaluateAll((xs) => xs.map((x) => x.checked)), [true, true, false, false, false, false]);
+// ticked parts start without prompts: marked, counted, and the box flagged in the list
+const part = (n) => page.locator(`.mcm-part[data-part="${n}"]`);
+assert.equal(await part("face").locator(".mcm-need-text").count(), 1);
+assert.equal(await part("hair").locator(".mcm-need-text").count(), 0);                         // not ticked
+assert.equal(await row("Alice").locator(".mcm-need").count(), 1);
+assert.match(await page.locator(".mrl-status").innerText(), /part\(s\) need a prompt/);
 await parts.nth(2).check();                                                              // left hand
 let d = await detail();
 assert.equal(d.boxes.alice.parts.left_hand.on, true);
 assert.equal(d.boxes.alice.parts.right_hand.on, false);
 assert.equal(d.boxes.alice.parts.face.on, true);
-await page.locator(".mrl-props textarea").first().fill("green eyes, freckles");
-await page.locator(".mrl-props textarea").first().press("Tab");
-assert.equal((await detail()).boxes.alice.prompt, "green eyes, freckles");
-// a part's settings open under its row (one at a time): the prompt its pass will use, denoise, restore, crop
-const part = (n) => page.locator(`.mcm-part[data-part="${n}"]`);
+assert.equal(await page.locator(".mrl-props textarea").count(), 0);                      // no box-level detail prompt
+// a part's settings open under its row (one at a time): the character's prompt for reference, the part's
+// own prompt (required, sent as written), denoise, restore, crop
 const panels = page.locator(".mcm-panel");
-const resetBtn = page.locator(".mcm-panel button", { hasText: "Reset prompt" });
 assert.equal(await panels.count(), 0);
 await part("eyes").locator(".mcm-edit").click();
 assert.equal(await panels.count(), 1);
+assert.equal(await page.locator(".mcm-panel .mcm-caption-ref").innerText(), "a tall woman");
 const pp = page.locator(".mcm-panel textarea.mcm-part-prompt");
-assert.equal(await pp.inputValue(), "a tall woman, green eyes, freckles, detailed eyes");      // prefilled: what is sent
-assert.equal(await resetBtn.isDisabled(), true);
-await pp.fill("a tall woman, green eyes, detailed eyes");                                       // no freckles here
+assert.equal(await pp.inputValue(), "");
+await pp.fill("close-up of detailed green eyes");
 await pp.press("Tab");
 d = await detail();
-assert.equal(d.boxes.alice.parts.eyes.full_prompt, "a tall woman, green eyes, detailed eyes");
-assert.equal(await pp.inputValue(), "a tall woman, green eyes, detailed eyes");
-assert.equal(await resetBtn.isDisabled(), false);
-assert.equal(await part("eyes").locator(".mcm-mod").count(), 1);                               // marked as edited
-assert.equal(await part("face").locator(".mcm-mod").count(), 0);
-if (process.argv[2]) await page.locator(".mrl-props").screenshot({ path: process.argv[2].replace(/\.png$/, "-part.png") });
+assert.equal(d.boxes.alice.parts.eyes.full_prompt, "close-up of detailed green eyes");
+assert.equal(await part("eyes").locator(".mcm-need-text").count(), 0);
+assert.equal(await part("eyes").locator(".mcm-mod").count(), 0);
 await page.locator(".mcm-panel input.mcm-denoise").fill("0.6");
 await page.locator(".mcm-panel input.mcm-denoise").press("Tab");
 assert.equal((await detail()).boxes.alice.parts.eyes.denoise, 0.6);
-await resetBtn.click();                                                                          // back to automatic
+assert.equal(await part("eyes").locator(".mcm-mod").count(), 1);                               // marked as edited
+if (process.argv[2]) await page.locator(".mrl-props").screenshot({ path: process.argv[2].replace(/\.png$/, "-part.png") });
+await pp.fill("");                                                                               // cleared: none again
+await pp.press("Tab");
 assert.equal((await detail()).boxes.alice.parts.eyes.full_prompt, null);
-assert.equal(await pp.inputValue(), "a tall woman, green eyes, freckles, detailed eyes");
-assert.equal(await resetBtn.isDisabled(), true);
+assert.equal(await part("eyes").locator(".mcm-need-text").count(), 1);
 await part("left_hand").locator(".mcm-edit").click();
 assert.equal(await panels.count(), 1);                                                          // eyes closed
 await page.locator(".mcm-panel input.mcm-restore").fill("0");
@@ -245,14 +246,28 @@ assert.equal(d.boxes.alice.parts.right_hand.whole_crop, true);
 assert.equal(d.boxes.alice.parts.left_hand.whole_crop, false);
 await part("right_hand").locator(".mcm-edit").click();
 assert.equal(await panels.count(), 0);
-await page.locator(".mrl-props button", { hasText: "Add detail LoRA" }).click();
-await page.locator(".mcm-lora input[type=text]").fill("eye_detail.safetensors");
-await page.locator(".mcm-lora input[type=text]").press("Tab");
-await page.locator(".mcm-lora input[type=number]").fill("0.5");
-await page.locator(".mcm-lora input[type=number]").press("Tab");
-assert.deepEqual((await detail()).boxes.alice.loras, [{ lora: "eye_detail.safetensors", weight: 0.5 }]);
-await page.locator(".mrl-props .mrl-field", { hasText: "Box LoRAs" }).locator("input").uncheck();
-assert.equal((await detail()).boxes.alice.use_box_loras, false);
+// LoRAs: a list that starts as the box's own; edit, remove, add; Reset goes back
+const loraRows = page.locator(".mcm-lora");
+const resetLoras = page.locator(".mrl-props button.mcm-reset-loras");
+assert.equal(await loraRows.count(), 1);
+assert.equal(await loraRows.nth(0).locator("input[type=text]").inputValue(), "alice.safetensors");
+assert.equal(await loraRows.nth(0).locator("input[type=number]").inputValue(), "0.8");
+assert.equal(await resetLoras.isDisabled(), true);
+await loraRows.nth(0).locator("input[type=number]").fill("0.5");
+await loraRows.nth(0).locator("input[type=number]").press("Tab");
+assert.deepEqual((await detail()).boxes.alice.lora_list, [{ lora: "alice.safetensors", weight: 0.5 }]);
+assert.equal(await resetLoras.isDisabled(), false);
+await page.locator(".mrl-props button", { hasText: "Add LoRA" }).click();
+assert.equal(await loraRows.count(), 2);
+await loraRows.nth(1).locator("input[type=text]").fill("eye_detail.safetensors");
+await loraRows.nth(1).locator("input[type=text]").press("Tab");
+assert.deepEqual((await detail()).boxes.alice.lora_list, [{ lora: "alice.safetensors", weight: 0.5 }, { lora: "eye_detail.safetensors", weight: 1 }]);
+await loraRows.nth(0).locator("button").click();                                                // remove the box's own
+assert.deepEqual((await detail()).boxes.alice.lora_list, [{ lora: "eye_detail.safetensors", weight: 1 }]);
+await resetLoras.click();
+assert.ok(!("lora_list" in (await detail()).boxes.alice));
+assert.equal(await loraRows.count(), 1);
+assert.equal(await loraRows.nth(0).locator("input[type=text]").inputValue(), "alice.safetensors");
 // ticking a box in the list turns Detail on without selecting it
 await row("Lamp").locator("input[type=checkbox]").check();
 d = await detail();

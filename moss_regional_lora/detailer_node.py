@@ -6,7 +6,7 @@ import logging
 import os
 from collections import OrderedDict
 
-from .detailer import count_passes, describe_pass, detail, needs_reference, stack_previews
+from .detailer import count_passes, describe_pass, detail, missing_prompts, needs_reference, plan, stack_previews
 
 log = logging.getLogger("moss_regional_lora")
 
@@ -171,6 +171,12 @@ class MossRegionalDetailer:
             from comfy_execution.graph_utils import ExecutionBlocker
             log.info("[MOSS Regional Detailer] stopped before detailing (untick 'stop_before_detailing' to run)")
             return (ExecutionBlocker(None), ExecutionBlocker(None))   # silently skips everything after this node
+        missing = missing_prompts(list(plan(character_masks, denoise, padding, crop_size / max_upscale,
+                                            mask_grow + feather)))
+        if missing:
+            raise ValueError("MOSS Regional Detailer: these parts have no prompt: " + "; ".join(missing)
+                             + ". Write each one in the Character Masks editor (the part's edit button), or untick "
+                             "the part. Boxes are named by their place in the box list (region 1 = the first).")
         total = count_passes(character_masks, denoise, padding, crop_size / max_upscale, mask_grow + feather)
         if total == 0:
             log.info("[MOSS Regional Detailer] no part masks to detail; image passed through")

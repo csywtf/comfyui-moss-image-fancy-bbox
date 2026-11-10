@@ -53,6 +53,11 @@ const CSS = `
 .mcm-part.open{background:rgba(80,140,255,.18)}
 .mcm-part .grow,.mcm-part-name{cursor:pointer}
 .mcm-part .grow{flex:1;align-self:stretch}
+.mcm-part.needs .mcm-part-name{color:#f99}
+.mcm-need-text{font-size:10px;color:#f99}
+.mcm-need{font:bold 10px/14px sans-serif;width:14px;height:14px;border-radius:7px;background:#c33;color:#fff;text-align:center;flex:0 0 auto}
+.mcm-caption-ref{font-size:11px;line-height:1.35;opacity:.85;padding:4px 6px;border:1px dashed rgba(128,128,128,.5);border-radius:3px;max-height:120px;overflow:auto;white-space:pre-wrap;user-select:text}
+.mrl-sec-title .grow{flex:1}
 .mcm-mod{font-size:10px;padding:0 4px;border-radius:3px;background:rgba(80,140,255,.35)}
 .mcm-panel{margin:1px 0 6px 18px;padding:5px 6px;border:1px solid #6af;border-radius:4px;display:flex;flex-direction:column;gap:4px}
 .mcm-panel-head{display:flex;align-items:center;gap:6px;font-size:11px;opacity:.9}
@@ -564,6 +569,7 @@ class MasksEditor {
         el("span", { class: "mrl-chip", style: `background:${color}` }),
         el("span", { class: "mrl-name", text: region.name || region.id, title: region.name || region.id }),
         el("span", { class: "mrl-badge", text: region.label || "object" }),
+        D.missingPrompts(det).length ? el("span", { class: "mcm-need", text: "!", title: `${D.missingPrompts(det).length} part(s) need a prompt` }) : null,
         dots,
       ]);
       row.addEventListener("click", () => this.select(region.id));
@@ -572,7 +578,8 @@ class MasksEditor {
     if (this.src?.ok && !rows.length) rows.push(el("div", { class: "mcm-empty", text: "The connected node has no boxes yet." }));
     this.list.replaceChildren(...rows);
     const n = this.boxes().filter(({ region }) => this.detailOf(region).enabled).length;
-    this.statusLine.textContent = this.result ? `Last run: ${this.result.boxes.length} box(es) masked · ${n} set to detail` : `${n} box(es) set to detail · run the workflow to see the masks`;
+    const needs = this.boxes().reduce((k, { region }) => k + D.missingPrompts(this.detailOf(region)).length, 0);
+    this.statusLine.textContent = (this.result ? `Last run: ${this.result.boxes.length} box(es) masked · ${n} set to detail` : `${n} box(es) set to detail · run the workflow to see the masks`) + (needs ? ` · ${needs} part(s) need a prompt` : "");
   }
 
   select(id) {
@@ -635,44 +642,51 @@ class MasksEditor {
     const on = el("input", { type: "checkbox" });
     on.checked = det.enabled;
     on.addEventListener("change", () => this.updateDetail(region, (x) => (x.enabled = on.checked)));
-    const prompt = rememberHeight(el("textarea", { placeholder: "Added to every part's prompt, e.g. green eyes, freckles" }), "detailPrompt");
-    prompt.value = det.prompt;
-    prompt.addEventListener("change", () => this.updateDetail(region, (x) => (x.prompt = prompt.value)));
     const rb = this.resultBox(region.id);
     return el("div", { class: "mrl-sec" }, [
       this.field("Detail", on, "Mask and detail this box"),
-      el("div", { class: "mrl-hint", text: region.caption ? `Caption: ${region.caption}` : "This box has no caption; its parts are prompted with the detail prompt and part prompts only." }),
-      this.field("Prompt", prompt),
+      el("div", { class: "mrl-hint", text: region.caption ? `Caption: ${region.caption}` : "This box has no caption." }),
       rb && rb.outline_found === false ? el("div", { class: "mrl-hint", style: "color:#f99", text: "SAM3 found no character in this box; the whole box was used as its outline." }) : null,
     ]);
   }
 
   lorasSection(region) {
     const det = this.detailOf(region);
-    const use = el("input", { type: "checkbox" });
-    use.checked = det.use_box_loras;
-    use.addEventListener("change", () => this.updateDetail(region, (x) => (x.use_box_loras = use.checked)));
-    const own = S.lorasOf(region).filter((e) => e.lora && e.weight).map((e) => `${loraDisplayName(e.lora)} (${e.weight})`);
+    const own = S.lorasOf(region);
+    const list = D.editableLoras(own, det);
+    const edit = (change) =>
+      this.updateDetail(region, (x) => {
+        x.lora_list = D.editableLoras(own, x);
+        change(x.lora_list);
+      });
     const listId = `mcm-loras-${Math.random().toString(36).slice(2)}`;
     const datalist = el("datalist", { id: listId }, this.loras.map((l) => el("option", { value: l })));
-    const rows = det.loras.map((e, k) => {
+    const rows = list.map((e, k) => {
       const name = el("input", { type: "text", list: listId, value: e.lora, placeholder: "LoRA file" });
-      name.addEventListener("change", () => this.updateDetail(region, (x) => (x.loras[k].lora = name.value.trim())));
-      const weight = el("input", { type: "number", step: "0.05", value: String(e.weight), title: "Weight" });
+      name.addEventListener("change", () => edit((l) => (l[k].lora = name.value.trim())));
+      const weight = el("input", { type: "number", step: "0.05", value: String(e.weight), title: "Weight (0 turns it off)" });
       weight.addEventListener("change", () => {
         const v = Number(weight.value);
-        if (Number.isFinite(v)) this.updateDetail(region, (x) => (x.loras[k].weight = v));
+        if (Number.isFinite(v)) edit((l) => (l[k].weight = v));
       });
-      const remove = el("button", { icon: "x", class: "mrl-mini", title: "Remove", onclick: () => this.updateDetail(region, (x) => x.loras.splice(k, 1)) });
+      const remove = el("button", { icon: "x", class: "mrl-mini", title: "Remove", onclick: () => edit((l) => l.splice(k, 1)) });
       return el("div", { class: "mcm-lora" }, [name, weight, remove]);
     });
+    const reset = el("button", { class: "mrl-mini mcm-reset-loras", text: "Reset LoRAs", title: "Back to the box's own LoRAs and weights" });
+    reset.disabled = !D.lorasEdited(own, det);
+    reset.addEventListener("click", () =>
+      this.updateDetail(region, (x) => {
+        x.lora_list = null;
+        x.use_box_loras = true; // older settings, folded into the list when it is first edited
+        x.loras = [];
+      }),
+    );
     return el("div", { class: "mrl-sec" }, [
-      el("div", { class: "mrl-sec-title", text: "LoRAs" }),
-      this.field("Box LoRAs", use, "Apply the box's own LoRAs (at their weights) while detailing"),
-      el("div", { class: "mrl-hint", text: own.length ? own.join(", ") : "The box has no LoRAs." }),
-      el("div", { class: "mcm-loras" }, rows),
+      el("div", { class: "mrl-sec-title" }, [el("span", { class: "grow", text: "LoRAs" }), reset]),
+      rows.length ? el("div", { class: "mcm-loras" }, rows) : el("div", { class: "mrl-hint", text: "No LoRAs while detailing this box." }),
       datalist,
-      el("button", { icon: "plus", text: "Add detail LoRA", title: "A LoRA used only while detailing this box", onclick: () => this.updateDetail(region, (x) => x.loras.push({ lora: "", weight: 1 })) }),
+      el("button", { icon: "plus", text: "Add LoRA", title: "Add a LoRA used while detailing this box", onclick: () => edit((l) => l.push({ lora: "", weight: 1 })) }),
+      el("div", { class: "mrl-hint", text: "Starts as the box's own LoRAs: change a weight, remove one or add others for detailing." }),
     ]);
   }
 
@@ -687,17 +701,19 @@ class MasksEditor {
       on.addEventListener("change", () => this.updateDetail(region, (x) => (x.parts[p.name].on = on.checked)));
       const known = rb && s.on && det.enabled && p.name in (rb.found || {});
       const open = this.openPart === p.name;
-      const edited = !!(s.full_prompt || s.denoise != null || s.restore != null || s.whole_crop);
+      const edited = !!(s.denoise != null || s.restore != null || s.whole_crop);
+      const needsPrompt = det.enabled && s.on && !D.partPrompt(det, p.name);
       const toggle = () => {
         this.openPart = open ? null : p.name;
         this.renderProps();
       };
       rows.push(
-        el("div", { class: `mcm-part${open ? " open" : ""}`, "data-part": p.name }, [
+        el("div", { class: `mcm-part${open ? " open" : ""}${needsPrompt ? " needs" : ""}`, "data-part": p.name }, [
           on,
           el("span", { class: "mcm-chip", style: `background:${p.color}` }),
           el("span", { class: "mcm-part-name", text: p.label + (known && rb.found[p.name] ? " ✓" : ""), onclick: toggle }),
-          edited ? el("span", { class: "mcm-mod", text: "edited", title: "This part has its own prompt or detail settings" }) : null,
+          needsPrompt ? el("span", { class: "mcm-need-text", text: "needs a prompt", title: "The detailer won't run until every ticked part has a prompt: open it to write one" }) : null,
+          edited ? el("span", { class: "mcm-mod", text: "edited", title: "This part has its own denoise, restore or crop settings" }) : null,
           el("span", { class: "grow", onclick: toggle }),
           el("button", { class: "mrl-mini mcm-edit", icon: open ? "chevron-down" : "chevron-right", title: `${open ? "Close" : "Edit"} the ${p.label}'s prompt and detail settings`, onclick: toggle }),
         ]),
@@ -708,26 +724,19 @@ class MasksEditor {
     return el("div", { class: "mrl-sec" }, [
       el("div", { class: "mrl-sec-title", text: "Parts" }),
       el("div", { class: "mcm-parts" }, rows),
-      el("div", { class: "mrl-hint", text: "Left and right hand as seen in the image. A part's prompt and settings are used by the detailer only; changing them doesn't re-run SAM3." }),
+      el("div", { class: "mrl-hint", text: "Every ticked part needs its own prompt: describe just that part, e.g. \"close-up of a detailed realistic hand resting on a hip, short purple fingernails\". Left and right hand as seen in the image. Prompts and settings are used by the detailer only; changing them doesn't re-run SAM3." }),
     ]);
   }
 
   /** A part's settings, open under its row: the prompt its detail pass will use, denoise, restore, crop. */
   partPanel(region, det, p) {
     const s = det.parts[p.name];
-    const auto = D.autoPrompt(region.caption, det, p.name);
-    const prompt = rememberHeight(el("textarea", { class: "mcm-part-prompt", title: `The ${p.label}'s detail prompt, sent as written. Edit it to leave out details you don't want redrawn here.` }), "partPrompt");
-    prompt.value = D.partPrompt(region.caption, det, p.name);
-    const reset = el("button", { class: "mrl-mini", text: "Reset prompt", title: `Back to the automatic prompt: "${auto}"` });
-    const sync = () => (reset.disabled = prompt.value.trim() === auto);
-    sync();
-    prompt.addEventListener("input", sync);
+    const prompt = rememberHeight(el("textarea", { class: "mcm-part-prompt", placeholder: `Required: describe just the ${p.label}, e.g. close-up of a detailed ${p.label}...`, title: `The ${p.label}'s detail prompt, sent exactly as written` }), "partPrompt");
+    prompt.value = s.full_prompt || "";
     prompt.addEventListener("change", () => {
       const v = prompt.value.trim();
-      // empty or unchanged: automatic again (it follows later caption and detail prompt edits)
-      this.updateDetail(region, (x) => (x.parts[p.name].full_prompt = v && v !== auto ? prompt.value : null));
+      this.updateDetail(region, (x) => (x.parts[p.name].full_prompt = v ? prompt.value : null));
     });
-    reset.addEventListener("click", () => this.updateDetail(region, (x) => (x.parts[p.name].full_prompt = null)));
     const unit = (key, title) => {
       const input = el("input", { type: "number", min: "0", max: "1", step: "0.05", class: `mcm-${key}`, value: s[key] == null ? "" : String(s[key]), placeholder: "default", title });
       input.addEventListener("change", () => {
@@ -740,7 +749,9 @@ class MasksEditor {
     crop.checked = !!s.whole_crop;
     crop.addEventListener("change", () => this.updateDetail(region, (x) => (x.parts[p.name].whole_crop = crop.checked)));
     return el("div", { class: "mcm-panel" }, [
-      el("div", { class: "mcm-panel-head" }, [el("span", { class: "grow", text: "Prompt" }), reset]),
+      el("div", { class: "mcm-panel-head", text: "Character prompt (for reference)" }),
+      el("div", { class: "mcm-caption-ref", text: region.caption || "This box has no caption." }),
+      el("div", { class: "mcm-panel-head", text: "Prompt" }),
       prompt,
       this.field("Denoise", unit("denoise", ""), `How much the ${p.label} is redrawn (empty: the detailer's default)`),
       this.field("Restore", unit("restore", ""), `Detail restore for the ${p.label}: 1 keeps the original's fine texture, 0 lets the redraw replace it (to change its style). Empty: the detailer's default`),

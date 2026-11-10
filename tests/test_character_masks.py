@@ -559,6 +559,7 @@ def test_detail_resolution_matches_the_editor():
         d = cm.resolve_detail(box("x", [0, 0, 1, 1], label=case["label"]), case["stored"])
         got = {"enabled": d.enabled, "prompt": d.prompt, "use_box_loras": d.use_box_loras,
                "loras": [list(e) for e in d.loras],
+               "lora_list": None if d.lora_list is None else [list(e) for e in d.lora_list],
                "paint": sorted(d.paint),
                "parts": {n: {"on": p.on, "prompt": p.prompt, "denoise": p.denoise, "restore": p.restore,
                                    "whole_crop": p.whole_crop, "full_prompt": p.full_prompt}
@@ -630,16 +631,20 @@ def test_runner_find_each_returns_each_detection(fake_sam3):
     assert len(each) == 2 and each[0][30:32, 100:103].all() and each[1][89, 159] and each[1].sum() == 1
 
 
-def test_part_prompts_match_the_editor():
-    """The prompt a pass uses, automatic or edited, as web/detail_state.js builds it (shared fixture)."""
+def test_part_prompts_and_loras_match_the_editor():
+    """A pass's prompt (exactly as written, "" if none) and LoRAs (the edited list, or the box's own), as
+    web/detail_state.js resolves them (shared fixture)."""
     from moss_regional_lora import detailer as dt
     path = os.path.join(os.path.dirname(__file__), "web", "fixtures", "detail_cases.json")
-    for case in json.load(open(path))["prompts"]:
-        info = box("x", [0, 0, 1, 1], label="character")
-        d = cm.resolve_detail(info, case["stored"])
-        m = cm.CharacterMask(id="x", name="x", label="character", caption=case["caption"], color="#fff", loras=(),
-                             detail=d, rect=(0, 0, 1, 1), outline=torch.zeros(1, 1, dtype=torch.bool),
-                             outline_found=True, parts={}, found={})
-        s = d.parts[case["part"]]
-        assert dt.auto_prompt(case["caption"], d.prompt, s.prompt, case["part"]) == case["auto"], case
-        assert dt.part_prompt(m, case["part"]) == case["used"], case
+    data = json.load(open(path))
+
+    def mask(stored, loras=()):
+        d = cm.resolve_detail(box("x", [0, 0, 1, 1], label="character", loras=tuple(loras)), stored)
+        return cm.CharacterMask(id="x", name="x", label="character", caption="a tall woman", color="#fff",
+                                loras=tuple(loras), detail=d, rect=(0, 0, 1, 1),
+                                outline=torch.zeros(1, 1, dtype=torch.bool), outline_found=True, parts={}, found={})
+    for case in data["prompts"]:
+        assert dt.part_prompt(mask(case["stored"]), case["part"]) == case["used"], case
+    for case in data["loras"]:
+        box_loras = [tuple(e) for e in case["box"] if e[1] != 0]       # as regions.py hands them over
+        assert [list(e) for e in dt.pass_loras(mask(case["stored"], box_loras))] == case["expected"], case

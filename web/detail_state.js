@@ -25,7 +25,7 @@ const DEFAULT_ON = ["face", "eyes"];
 export function defaultDetail(label) {
   const parts = {};
   for (const n of PART_NAMES) parts[n] = { on: DEFAULT_ON.includes(n), prompt: "", denoise: null, restore: null, whole_crop: false, full_prompt: null };
-  return { enabled: label === "character", prompt: "", use_box_loras: true, loras: [], parts, paint: {} };
+  return { enabled: label === "character", prompt: "", use_box_loras: true, loras: [], lora_list: null, parts, paint: {} };
 }
 
 // What a box's paint can target: its whole character (ownership) or one of its parts. Each target holds
@@ -109,6 +109,9 @@ export function detailFor(doc, region) {
     prompt: typeof raw.prompt === "string" ? raw.prompt : "",
     use_box_loras: typeof raw.use_box_loras === "boolean" ? raw.use_box_loras : true,
     loras,
+    lora_list: Array.isArray(raw.lora_list)
+      ? raw.lora_list.filter((e) => e && typeof e === "object").map((e) => ({ lora: typeof e.lora === "string" ? e.lora : "", weight: isNum(e.weight) ? e.weight : 1 }))
+      : null,
     parts,
     paint: readPaint(raw.paint),
   };
@@ -127,10 +130,13 @@ export function setDetail(doc, id, detail) {
         const { points: _old, ...rest } = prev; // points were replaced by paint
         const paint = {};
         for (const [t, v] of Object.entries(detail.paint || {})) if (v && (v.add || v.sub)) paint[t] = { add: v.add || null, sub: v.sub || null };
-        return {
+        const out = {
           ...rest, enabled: detail.enabled, prompt: detail.prompt, use_box_loras: detail.use_box_loras,
           loras: detail.loras.map((e) => ({ ...e })), parts, paint,
         };
+        if (Array.isArray(detail.lora_list)) out.lora_list = detail.lora_list.map((e) => ({ lora: e.lora, weight: e.weight }));
+        else delete out.lora_list; // back to the box's own LoRAs
+        return out;
       })(),
     },
   };
@@ -227,16 +233,39 @@ export function partTags(labels, w, h) {
   return out.sort((p, q) => p.box - q.box || p.part - q.part);
 }
 
-/** The automatic prompt of a part's detail pass: the box's caption, its detail prompt, then the part's own
- * prompt or its hint. Same as autoPrompt in moss_regional_lora/detailer.py (shared fixture). */
-export function autoPrompt(caption, detail, partName) {
-  const part = PARTS.find((p) => p.name === partName);
-  const own = (detail?.parts?.[partName]?.prompt || "").trim() || part?.hint || "";
-  return [(caption || "").trim(), (detail?.prompt || "").trim(), own].filter((t) => t).join(", ");
+/** The prompt the detailer will use for a part: exactly what was written ("" = none yet). Same as
+ * part_prompt in moss_regional_lora/detailer.py (shared fixture). */
+export function partPrompt(detail, partName) {
+  const p = detail?.parts?.[partName]?.full_prompt;
+  return typeof p === "string" ? p.trim() : "";
 }
 
-/** The prompt the detailer will use for a part: its edited prompt, or else the automatic one. */
-export function partPrompt(caption, detail, partName) {
-  const edited = detail?.parts?.[partName]?.full_prompt;
-  return typeof edited === "string" && edited.trim() ? edited.trim() : autoPrompt(caption, detail, partName);
+/** The parts that will be detailed but have no prompt yet (the detailer refuses to run until they do). */
+export function missingPrompts(detail) {
+  if (!detail?.enabled) return [];
+  return PART_NAMES.filter((n) => detail.parts[n]?.on && !partPrompt(detail, n));
+}
+
+/** A box's own LoRAs as the detailer takes them: [{lora, weight}] with a file and a non-zero weight. */
+export function boxLoras(entries) {
+  return (entries || []).filter((e) => e && typeof e.lora === "string" && e.lora && isNum(e.weight) && e.weight !== 0).map((e) => ({ lora: e.lora, weight: e.weight }));
+}
+
+/** The LoRA list shown for editing: the edited list as stored (rows still being filled in included), or else
+ * the box's own LoRAs (older settings: the box's own unless turned off, plus the detail-only ones). */
+export function editableLoras(boxEntries, detail) {
+  if (Array.isArray(detail?.lora_list)) return detail.lora_list.map((e) => ({ ...e }));
+  return [...(detail?.use_box_loras === false ? [] : boxLoras(boxEntries)), ...boxLoras(detail?.loras)];
+}
+
+/** The LoRAs a box's passes use (rows without a file or with weight 0 left out). Same as pass_loras in
+ * moss_regional_lora/detailer.py (shared fixture). */
+export function detailLoras(boxEntries, detail) {
+  return boxLoras(editableLoras(boxEntries, detail));
+}
+
+/** Whether a box's detail LoRAs differ from its own LoRAs (what Reset LoRAs goes back to). */
+export function lorasEdited(boxEntries, detail) {
+  const key = (l) => JSON.stringify(l.map((e) => [e.lora, e.weight]));
+  return key(editableLoras(boxEntries, detail)) !== key(boxLoras(boxEntries));
 }
