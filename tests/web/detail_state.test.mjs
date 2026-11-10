@@ -11,7 +11,7 @@ test("settings resolve exactly as the node resolves them (shared fixture)", () =
   for (const c of CASES) {
     const doc = c.stored ? { version: 1, boxes: { x: c.stored } } : D.emptyDoc();
     const d = D.detailFor(doc, { id: "x", label: c.label });
-    const norm = { ...d, loras: d.loras.map((e) => [e.lora, e.weight]), paint: Object.keys(d.paint).sort() };
+    const norm = { ...d, loras: d.loras.map((e) => [e.lora, e.weight]), lora_list: d.lora_list && d.lora_list.map((e) => [e.lora, e.weight]), paint: Object.keys(d.paint).sort() };
     assert.deepEqual(norm, c.expected, JSON.stringify(c.stored));
   }
   assert.deepEqual(D.PART_NAMES, ["face", "eyes", "left_hand", "right_hand", "hair", "skin"]);
@@ -114,12 +114,36 @@ test("hands: distinct colours, L/R tags on a pixel of each hand, partAt picks th
   assert.equal(D.PARTS[D.partAt(both, 0).part].name, "eyes");
 });
 
-test("part prompts: automatic and edited, as the detailer builds them (shared fixture)", () => {
-  const prompts = JSON.parse(readFileSync(fileURLToPath(new URL("./fixtures/detail_cases.json", import.meta.url)), "utf8")).prompts;
-  for (const c of prompts) {
-    const doc = c.stored ? { version: 1, boxes: { x: c.stored } } : D.emptyDoc();
-    const d = D.detailFor(doc, { id: "x", label: "character" });
-    assert.equal(D.autoPrompt(c.caption, d, c.part), c.auto, JSON.stringify(c));
-    assert.equal(D.partPrompt(c.caption, d, c.part), c.used, JSON.stringify(c));
+test("part prompts are exactly as written; LoRAs: the edited list or the box's own (shared fixture)", () => {
+  const data = JSON.parse(readFileSync(fileURLToPath(new URL("./fixtures/detail_cases.json", import.meta.url)), "utf8"));
+  const resolve = (stored) => D.detailFor(stored ? { version: 1, boxes: { x: stored } } : D.emptyDoc(), { id: "x", label: "character" });
+  for (const c of data.prompts) assert.equal(D.partPrompt(resolve(c.stored), c.part), c.used, JSON.stringify(c));
+  for (const c of data.loras) {
+    const box = c.box.map(([lora, weight]) => ({ lora, weight, curve: [[0, 1], [1, 1]] }));
+    assert.deepEqual(D.detailLoras(box, resolve(c.stored)).map((e) => [e.lora, e.weight]), c.expected, JSON.stringify(c));
   }
+});
+
+test("missing prompts, LoRA edits and Reset", () => {
+  let doc = D.emptyDoc();
+  const alice = { id: "a", label: "character" };
+  let d = D.detailFor(doc, alice);
+  assert.deepEqual(D.missingPrompts(d), ["face", "eyes"]);                     // on by default, no prompts
+  d.parts.face.full_prompt = "a smiling face, freckles";
+  assert.deepEqual(D.missingPrompts(d), ["eyes"]);
+  d.enabled = false;
+  assert.deepEqual(D.missingPrompts(d), []);                                     // a box not detailed needs none
+  const box = [{ lora: "alice.safetensors", weight: 0.8 }];
+  d = D.detailFor(doc, alice);
+  assert.equal(D.lorasEdited(box, d), false);
+  d.lora_list = [...D.editableLoras(box, d), { lora: "", weight: 1 }];           // a row being added
+  doc = D.setDetail(doc, "a", d);
+  d = D.detailFor(doc, alice);
+  assert.deepEqual(d.lora_list, [{ lora: "alice.safetensors", weight: 0.8 }, { lora: "", weight: 1 }]);   // kept for editing
+  assert.deepEqual(D.detailLoras(box, d), [{ lora: "alice.safetensors", weight: 0.8 }]);                     // not used
+  assert.equal(D.lorasEdited(box, d), true);
+  d.lora_list = null;                                                             // Reset LoRAs
+  doc = D.setDetail(doc, "a", d);
+  assert.ok(!("lora_list" in doc.boxes.a));
+  assert.equal(D.lorasEdited(box, D.detailFor(doc, alice)), false);
 });

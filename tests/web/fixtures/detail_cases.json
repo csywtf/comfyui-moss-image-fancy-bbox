@@ -59,7 +59,8 @@
       "full_prompt": null
      }
     },
-    "paint": []
+    "paint": [],
+    "lora_list": null
    }
   },
   {
@@ -120,7 +121,8 @@
       "full_prompt": null
      }
     },
-    "paint": []
+    "paint": [],
+    "lora_list": null
    }
   },
   {
@@ -260,57 +262,176 @@
     "paint": [
      "character",
      "eyes"
-    ]
+    ],
+    "lora_list": null
    }
   }
  ],
  "prompts": [
   {
-   "caption": "a tall woman, black t-shirt",
    "stored": {
     "prompt": "green eyes",
     "parts": {
      "eyes": {
-      "prompt": ""
+      "prompt": "blue"
      }
     }
    },
    "part": "eyes",
-   "auto": "a tall woman, black t-shirt, green eyes, detailed eyes",
-   "used": "a tall woman, black t-shirt, green eyes, detailed eyes"
+   "used": ""
   },
   {
-   "caption": "  ",
-   "stored": {
-    "parts": {
-     "face": {
-      "prompt": " smiling "
-     }
-    }
-   },
-   "part": "face",
-   "auto": "smiling",
-   "used": "smiling"
-  },
-  {
-   "caption": "a tall woman",
    "stored": {
     "parts": {
      "left_hand": {
-      "full_prompt": "  realistic hand, pale skin "
+      "full_prompt": "  realistic hand resting on a hip, short purple fingernails "
      }
     }
    },
    "part": "left_hand",
-   "auto": "a tall woman, detailed hand",
-   "used": "realistic hand, pale skin"
+   "used": "realistic hand resting on a hip, short purple fingernails"
   },
   {
-   "caption": "",
+   "stored": {
+    "parts": {
+     "face": {
+      "full_prompt": "   "
+     }
+    }
+   },
+   "part": "face",
+   "used": ""
+  },
+  {
    "stored": null,
    "part": "right_hand",
-   "auto": "detailed hand",
-   "used": "detailed hand"
+   "used": ""
+  }
+ ],
+ "loras": [
+  {
+   "box": [
+    [
+     "alice.safetensors",
+     0.8
+    ]
+   ],
+   "stored": null,
+   "expected": [
+    [
+     "alice.safetensors",
+     0.8
+    ]
+   ]
+  },
+  {
+   "box": [
+    [
+     "alice.safetensors",
+     0.8
+    ],
+    [
+     "off.safetensors",
+     0
+    ]
+   ],
+   "stored": {
+    "use_box_loras": false,
+    "loras": [
+     {
+      "lora": "eye.safetensors",
+      "weight": 0.5
+     }
+    ]
+   },
+   "expected": [
+    [
+     "eye.safetensors",
+     0.5
+    ]
+   ]
+  },
+  {
+   "box": [
+    [
+     "alice.safetensors",
+     0.8
+    ]
+   ],
+   "stored": {
+    "loras": [
+     {
+      "lora": "eye.safetensors",
+      "weight": 0.5
+     }
+    ]
+   },
+   "expected": [
+    [
+     "alice.safetensors",
+     0.8
+    ],
+    [
+     "eye.safetensors",
+     0.5
+    ]
+   ]
+  },
+  {
+   "box": [
+    [
+     "alice.safetensors",
+     0.8
+    ]
+   ],
+   "stored": {
+    "lora_list": [
+     {
+      "lora": "alice.safetensors",
+      "weight": 0.4
+     },
+     {
+      "lora": "",
+      "weight": 1
+     },
+     {
+      "lora": "skin.safetensors",
+      "weight": 0
+     },
+     {
+      "lora": "real.safetensors",
+      "weight": 1.2
+     }
+    ],
+    "loras": [
+     {
+      "lora": "ignored.safetensors",
+      "weight": 1
+     }
+    ]
+   },
+   "expected": [
+    [
+     "alice.safetensors",
+     0.4
+    ],
+    [
+     "real.safetensors",
+     1.2
+    ]
+   ]
+  },
+  {
+   "box": [
+    [
+     "alice.safetensors",
+     0.8
+    ]
+   ],
+   "stored": {
+    "lora_list": []
+   },
+   "expected": []
   }
  ]
 }
