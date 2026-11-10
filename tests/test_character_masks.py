@@ -648,3 +648,46 @@ def test_part_prompts_and_loras_match_the_editor():
     for case in data["loras"]:
         box_loras = [tuple(e) for e in case["box"] if e[1] != 0]       # as regions.py hands them over
         assert [list(e) for e in dt.pass_loras(mask(case["stored"], box_loras))] == case["expected"], case
+
+
+def test_node_writes_missing_prompts_with_prompt_llm(fake_sam3, monkeypatch, tmp_path):
+    fp = types.ModuleType("folder_paths")
+    fp.get_temp_directory = lambda: str(tmp_path)
+    monkeypatch.setitem(sys.modules, "folder_paths", fp)
+    from moss_regional_lora import character_masks_node as cmn
+    boxes, scene = frame_setup()
+    monkeypatch.setattr(cmn, "_make_runner", lambda *a: FakeRunner(scene))
+    regions = json.dumps({"version": 2, "canvas": {"width": W, "height": H}, "regions": [
+        {"id": b.id, "name": b.name, "bbox": list(b.bbox), "label": b.label, "caption": f"{b.id} caption"}
+        for b in boxes]})
+    detail = json.dumps({"version": 1, "boxes": {"alice": {"parts": {"face": {"full_prompt": "kept"}}}}})
+
+    class Clip:
+        def __init__(self):
+            self.calls = []
+
+        def tokenize(self, text, **kw):
+            self.calls.append(text)
+            return text
+
+        def generate(self, tokens, **kw):
+            return "close-up of " + tokens.split("\n")[0]
+
+        def decode(self, ids):
+            return ids
+    clip = Clip()
+    opt = cmn.MossCharacterMasks.INPUT_TYPES()["optional"]
+    assert opt["prompt_llm"][0] == "CLIP" and opt["llm_system_prompt"][1]["default"] == ""
+    out = cmn.MossCharacterMasks().run(torch.rand(1, H, W, 3), regions, None, None, 0.5, 0.1, 2, detail,
+                                       prompt_llm=clip, llm_seed=3)
+    ui = out["ui"][cmn.UI_KEY][0]
+    assert ui["llm"] is True
+    # ticked, found and without a prompt: alice's eyes (her face has one) and bob's face (his eyes weren't found)
+    assert {k: set(v) for k, v in ui["generated"].items()} == {"alice": {"eyes"}, "bob": {"face"}}
+    assert "bob caption" in ui["generated"]["bob"]["face"]
+    result = out["result"][0]
+    alice, bob = result.frames[0].boxes
+    assert alice.detail.parts["face"].full_prompt == "kept"
+    assert bob.detail.parts["face"].full_prompt == ui["generated"]["bob"]["face"]
+    plain = cmn.MossCharacterMasks().run(torch.rand(1, H, W, 3), regions, None, None, 0.5, 0.1, 2, detail)
+    assert plain["ui"][cmn.UI_KEY][0]["llm"] is False and plain["ui"][cmn.UI_KEY][0]["generated"] == {}

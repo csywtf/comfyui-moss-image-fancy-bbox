@@ -11,7 +11,8 @@ test("settings resolve exactly as the node resolves them (shared fixture)", () =
   for (const c of CASES) {
     const doc = c.stored ? { version: 1, boxes: { x: c.stored } } : D.emptyDoc();
     const d = D.detailFor(doc, { id: "x", label: c.label });
-    const norm = { ...d, loras: d.loras.map((e) => [e.lora, e.weight]), lora_list: d.lora_list && d.lora_list.map((e) => [e.lora, e.weight]), paint: Object.keys(d.paint).sort() };
+    const parts = Object.fromEntries(Object.entries(d.parts).map(([n, { generated: _editorOnly, ...p }]) => [n, p]));
+    const norm = { ...d, parts, loras: d.loras.map((e) => [e.lora, e.weight]), lora_list: d.lora_list && d.lora_list.map((e) => [e.lora, e.weight]), paint: Object.keys(d.paint).sort() };
     assert.deepEqual(norm, c.expected, JSON.stringify(c.stored));
   }
   assert.deepEqual(D.PART_NAMES, ["face", "eyes", "left_hand", "right_hand", "hair", "skin"]);
@@ -67,7 +68,7 @@ test("overlay: selected box strong, others faint, finest part on top, nothing wh
 test("settings saved for 'hands' apply to both hands until one is edited", () => {
   const doc = { version: 1, boxes: { a: { parts: { hands: { on: true, denoise: 0.5 } } } } };
   const d = D.detailFor(doc, { id: "a", label: "character" });
-  assert.deepEqual(d.parts.left_hand, { on: true, prompt: "", denoise: 0.5, restore: null, whole_crop: false, full_prompt: null });
+  assert.deepEqual(d.parts.left_hand, { on: true, prompt: "", denoise: 0.5, restore: null, whole_crop: false, full_prompt: null, generated: false });
   assert.deepEqual(d.parts.right_hand, d.parts.left_hand);
   d.parts.right_hand.restore = 0;
   const next = D.detailFor(D.setDetail(doc, "a", d), { id: "a", label: "character" });
@@ -146,4 +147,19 @@ test("missing prompts, LoRA edits and Reset", () => {
   doc = D.setDetail(doc, "a", d);
   assert.ok(!("lora_list" in doc.boxes.a));
   assert.equal(D.lorasEdited(box, D.detailFor(doc, alice)), false);
+});
+
+test("prompts the prompt writer wrote are stored for parts without one, marked generated", () => {
+  let doc = { version: 1, boxes: { a: { parts: { face: { full_prompt: "typed by hand" } } } } };
+  const regions = [{ id: "a", label: "character" }, { id: "b", label: "character" }];
+  doc = D.storeGenerated(doc, { a: { face: "written", eyes: "close-up of green eyes" }, b: { left_hand: "a hand" }, gone: { face: "x" } }, regions);
+  const a = D.detailFor(doc, regions[0]);
+  assert.equal(a.parts.face.full_prompt, "typed by hand");                           // a typed prompt wins
+  assert.equal(a.parts.face.generated, false);
+  assert.equal(a.parts.eyes.full_prompt, "close-up of green eyes");
+  assert.equal(a.parts.eyes.generated, true);
+  assert.equal(D.detailFor(doc, regions[1]).parts.left_hand.full_prompt, "a hand");
+  assert.ok(!("gone" in doc.boxes));                                                // box deleted since the run
+  const same = D.storeGenerated(doc, { a: { eyes: "again" } }, regions);
+  assert.equal(same, doc);                                                          // nothing to store: unchanged
 });
