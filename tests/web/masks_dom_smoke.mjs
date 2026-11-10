@@ -195,32 +195,56 @@ console.log("settings ok");
 await row("Alice").click();
 assert.match(await page.locator(".mrl-props .mrl-panel-head").innerText(), /Detail: Alice/);
 assert.match(await page.locator(".mrl-props").innerText(), /alice \(0\.8\)/);           // the box's own LoRAs
-const parts = page.locator(".mcm-parts input[type=checkbox]:not(.mcm-crop)");
+const parts = page.locator(".mcm-parts input.mcm-on");
 assert.deepEqual(await parts.evaluateAll((xs) => xs.map((x) => x.checked)), [true, true, false, false, false, false]);
 await parts.nth(2).check();                                                              // left hand
 let d = await detail();
 assert.equal(d.boxes.alice.parts.left_hand.on, true);
 assert.equal(d.boxes.alice.parts.right_hand.on, false);
 assert.equal(d.boxes.alice.parts.face.on, true);
-await page.locator(".mrl-props textarea").fill("green eyes, freckles");
-await page.locator(".mrl-props textarea").press("Tab");
+await page.locator(".mrl-props textarea").first().fill("green eyes, freckles");
+await page.locator(".mrl-props textarea").first().press("Tab");
 assert.equal((await detail()).boxes.alice.prompt, "green eyes, freckles");
-// per part: denoise and restore (face denoise, face restore, eyes denoise, eyes restore, left hand ..., right hand ...)
-const numbers = page.locator(".mcm-parts input[type=number]");
-await numbers.nth(2).fill("0.6");
-await numbers.nth(2).press("Tab");
+// a part's settings open under its row (one at a time): the prompt its pass will use, denoise, restore, crop
+const part = (n) => page.locator(`.mcm-part[data-part="${n}"]`);
+const panels = page.locator(".mcm-panel");
+const resetBtn = page.locator(".mcm-panel button", { hasText: "Reset prompt" });
+assert.equal(await panels.count(), 0);
+await part("eyes").locator(".mcm-edit").click();
+assert.equal(await panels.count(), 1);
+const pp = page.locator(".mcm-panel textarea.mcm-part-prompt");
+assert.equal(await pp.inputValue(), "a tall woman, green eyes, freckles, detailed eyes");      // prefilled: what is sent
+assert.equal(await resetBtn.isDisabled(), true);
+await pp.fill("a tall woman, green eyes, detailed eyes");                                       // no freckles here
+await pp.press("Tab");
+d = await detail();
+assert.equal(d.boxes.alice.parts.eyes.full_prompt, "a tall woman, green eyes, detailed eyes");
+assert.equal(await pp.inputValue(), "a tall woman, green eyes, detailed eyes");
+assert.equal(await resetBtn.isDisabled(), false);
+assert.equal(await part("eyes").locator(".mcm-mod").count(), 1);                               // marked as edited
+assert.equal(await part("face").locator(".mcm-mod").count(), 0);
+if (process.argv[2]) await page.locator(".mrl-props").screenshot({ path: process.argv[2].replace(/\.png$/, "-part.png") });
+await page.locator(".mcm-panel input.mcm-denoise").fill("0.6");
+await page.locator(".mcm-panel input.mcm-denoise").press("Tab");
 assert.equal((await detail()).boxes.alice.parts.eyes.denoise, 0.6);
-await numbers.nth(5).fill("0");                                                          // left hand restore
-await numbers.nth(5).press("Tab");
+await resetBtn.click();                                                                          // back to automatic
+assert.equal((await detail()).boxes.alice.parts.eyes.full_prompt, null);
+assert.equal(await pp.inputValue(), "a tall woman, green eyes, freckles, detailed eyes");
+assert.equal(await resetBtn.isDisabled(), true);
+await part("left_hand").locator(".mcm-edit").click();
+assert.equal(await panels.count(), 1);                                                          // eyes closed
+await page.locator(".mcm-panel input.mcm-restore").fill("0");
+await page.locator(".mcm-panel input.mcm-restore").press("Tab");
 d = await detail();
 assert.equal(d.boxes.alice.parts.left_hand.restore, 0);
 assert.equal(d.boxes.alice.parts.right_hand.restore, null);
-const crops = page.locator(".mcm-parts input.mcm-crop");                                   // whole crop, per part
-assert.equal(await crops.count(), 6);
-await crops.nth(3).check();                                                                 // right hand
+await part("right_hand").locator(".mcm-part-name").click();                                    // the name opens it too
+await page.locator(".mcm-panel input.mcm-crop").check();
 d = await detail();
 assert.equal(d.boxes.alice.parts.right_hand.whole_crop, true);
 assert.equal(d.boxes.alice.parts.left_hand.whole_crop, false);
+await part("right_hand").locator(".mcm-edit").click();
+assert.equal(await panels.count(), 0);
 await page.locator(".mrl-props button", { hasText: "Add detail LoRA" }).click();
 await page.locator(".mcm-lora input[type=text]").fill("eye_detail.safetensors");
 await page.locator(".mcm-lora input[type=text]").press("Tab");

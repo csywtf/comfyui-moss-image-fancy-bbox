@@ -90,6 +90,7 @@ class PartSettings:
     denoise: Optional[float] = None      # None = the detailer's default
     restore: Optional[float] = None      # detail restoration; None = the detailer's default
     whole_crop: bool = False             # redraw the whole crop (context too), then paste back only the part
+    full_prompt: Optional[str] = None    # the pass's whole prompt, as edited; None = built automatically
 
 
 @dataclass(frozen=True)
@@ -142,6 +143,10 @@ def _denoise(v) -> Optional[float]:
     return min(1.0, max(0.0, float(v)))
 
 
+def _full_prompt(v) -> Optional[str]:
+    return v if isinstance(v, str) and v.strip() else None
+
+
 def resolve_detail(box: BoxInfo, raw: Optional[dict]) -> BoxDetail:
     """A box's settings: what the editor stored for it, over the defaults for its label."""
     base = default_detail(box.label)
@@ -162,7 +167,8 @@ def resolve_detail(box: BoxInfo, raw: Optional[dict]) -> BoxDetail:
         if isinstance(p, dict):
             parts[n] = PartSettings(on=_bool(p.get("on"), parts[n].on), prompt=_str(p.get("prompt")),
                                     denoise=_denoise(p.get("denoise")), restore=_denoise(p.get("restore")),
-                                    whole_crop=_bool(p.get("whole_crop"), False))
+                                    whole_crop=_bool(p.get("whole_crop"), False),
+                                    full_prompt=_full_prompt(p.get("full_prompt")))
     return BoxDetail(enabled=_bool(raw.get("enabled"), base.enabled), prompt=_str(raw.get("prompt")),
                      use_box_loras=_bool(raw.get("use_box_loras"), True), loras=tuple(loras), parts=parts,
                      paint=_paint(raw.get("paint")))

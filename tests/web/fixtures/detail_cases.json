@@ -15,42 +15,48 @@
       "prompt": "",
       "denoise": null,
       "restore": null,
-      "whole_crop": false
+      "whole_crop": false,
+      "full_prompt": null
      },
      "eyes": {
       "on": true,
       "prompt": "",
       "denoise": null,
       "restore": null,
-      "whole_crop": false
+      "whole_crop": false,
+      "full_prompt": null
      },
      "left_hand": {
       "on": false,
       "prompt": "",
       "denoise": null,
       "restore": null,
-      "whole_crop": false
+      "whole_crop": false,
+      "full_prompt": null
      },
      "right_hand": {
       "on": false,
       "prompt": "",
       "denoise": null,
       "restore": null,
-      "whole_crop": false
+      "whole_crop": false,
+      "full_prompt": null
      },
      "hair": {
       "on": false,
       "prompt": "",
       "denoise": null,
       "restore": null,
-      "whole_crop": false
+      "whole_crop": false,
+      "full_prompt": null
      },
      "skin": {
       "on": false,
       "prompt": "",
       "denoise": null,
       "restore": null,
-      "whole_crop": false
+      "whole_crop": false,
+      "full_prompt": null
      }
     },
     "paint": []
@@ -70,42 +76,48 @@
       "prompt": "",
       "denoise": null,
       "restore": null,
-      "whole_crop": false
+      "whole_crop": false,
+      "full_prompt": null
      },
      "eyes": {
       "on": true,
       "prompt": "",
       "denoise": null,
       "restore": null,
-      "whole_crop": false
+      "whole_crop": false,
+      "full_prompt": null
      },
      "left_hand": {
       "on": false,
       "prompt": "",
       "denoise": null,
       "restore": null,
-      "whole_crop": false
+      "whole_crop": false,
+      "full_prompt": null
      },
      "right_hand": {
       "on": false,
       "prompt": "",
       "denoise": null,
       "restore": null,
-      "whole_crop": false
+      "whole_crop": false,
+      "full_prompt": null
      },
      "hair": {
       "on": false,
       "prompt": "",
       "denoise": null,
       "restore": null,
-      "whole_crop": false
+      "whole_crop": false,
+      "full_prompt": null
      },
      "skin": {
       "on": false,
       "prompt": "",
       "denoise": null,
       "restore": null,
-      "whole_crop": false
+      "whole_crop": false,
+      "full_prompt": null
      }
     },
     "paint": []
@@ -125,7 +137,8 @@
     ],
     "parts": {
      "eyes": {
-      "on": false
+      "on": false,
+      "full_prompt": "   "
      },
      "hands": {
       "on": true,
@@ -142,7 +155,8 @@
      },
      "face": {
       "restore": 0.4,
-      "whole_crop": true
+      "whole_crop": true,
+      "full_prompt": "a smiling woman, freckles"
      },
      "right_hand": {
       "on": false,
@@ -199,42 +213,48 @@
       "prompt": "",
       "denoise": null,
       "restore": 0.4,
-      "whole_crop": true
+      "whole_crop": true,
+      "full_prompt": "a smiling woman, freckles"
      },
      "eyes": {
       "on": false,
       "prompt": "",
       "denoise": null,
       "restore": null,
-      "whole_crop": false
+      "whole_crop": false,
+      "full_prompt": null
      },
      "left_hand": {
       "on": true,
       "prompt": "five fingers",
       "denoise": 0.5,
       "restore": null,
-      "whole_crop": false
+      "whole_crop": false,
+      "full_prompt": null
      },
      "right_hand": {
       "on": false,
       "prompt": "",
       "denoise": null,
       "restore": 1.0,
-      "whole_crop": false
+      "whole_crop": false,
+      "full_prompt": null
      },
      "hair": {
       "on": false,
       "prompt": "",
       "denoise": null,
       "restore": null,
-      "whole_crop": false
+      "whole_crop": false,
+      "full_prompt": null
      },
      "skin": {
       "on": false,
       "prompt": "",
       "denoise": 1,
       "restore": null,
-      "whole_crop": false
+      "whole_crop": false,
+      "full_prompt": null
      }
     },
     "paint": [
@@ -242,6 +262,55 @@
      "eyes"
     ]
    }
+  }
+ ],
+ "prompts": [
+  {
+   "caption": "a tall woman, black t-shirt",
+   "stored": {
+    "prompt": "green eyes",
+    "parts": {
+     "eyes": {
+      "prompt": ""
+     }
+    }
+   },
+   "part": "eyes",
+   "auto": "a tall woman, black t-shirt, green eyes, detailed eyes",
+   "used": "a tall woman, black t-shirt, green eyes, detailed eyes"
+  },
+  {
+   "caption": "  ",
+   "stored": {
+    "parts": {
+     "face": {
+      "prompt": " smiling "
+     }
+    }
+   },
+   "part": "face",
+   "auto": "smiling",
+   "used": "smiling"
+  },
+  {
+   "caption": "a tall woman",
+   "stored": {
+    "parts": {
+     "left_hand": {
+      "full_prompt": "  realistic hand, pale skin "
+     }
+    }
+   },
+   "part": "left_hand",
+   "auto": "a tall woman, detailed hand",
+   "used": "realistic hand, pale skin"
+  },
+  {
+   "caption": "",
+   "stored": null,
+   "part": "right_hand",
+   "auto": "detailed hand",
+   "used": "detailed hand"
   }
  ]
 }

@@ -275,12 +275,20 @@ and the zoom buttons, with the same zoom and pan controls as the main editor):
   the others faint. Click a character to select its box.
 - **Detail** (right, for the selected box): Detail on/off; a detail prompt added to every part's prompt
   (a trigger word, "green eyes"); whether to use the box's own LoRAs; detail-only LoRAs; and per part a
-  checkbox, a prompt (empty: "detailed face" and so on), a denoise and a detail restore (both empty:
-  the detailer's defaults) and **crop** (whole crop: redraw the part together with its surroundings and
-  paste back only the part; without it the unchanged surroundings pull the redraw back to the old look,
-  so tick it to change a part's style, e.g. an anime hand to realistic, with a high denoise), with
-  "found" / "not found" after a run. Hands are two parts, **left hand**
-  and **right hand**, as seen in the image, each with its own settings: with two or more hands found,
+  checkbox, with "found" / "not found" after a run, and an edit button (or click its name) that opens
+  the part's settings under its row, one part at a time; parts with their own settings are marked
+  *edited*:
+  - **Prompt**: the exact prompt the part's detail pass will use, prefilled with the automatic one (the
+    box's caption, its detail prompt, then "detailed face" and so on). Edit it to leave out details you
+    don't want redrawn there (the shirt in a hand's prompt, say); it is then sent as written, and no
+    longer follows later caption edits. **Reset prompt** (enabled once it differs) goes back to the
+    automatic prompt.
+  - **Denoise** and **Restore** (empty: the detailer's defaults).
+  - **Whole crop**: redraw the part together with its surroundings and paste back only the part;
+    without it the unchanged surroundings pull the redraw back to the old look, so tick it to change a
+    part's style, e.g. an anime hand to realistic, with a high denoise.
+
+  Hands are two parts, **left hand** and **right hand**, as seen in the image, each with its own settings: with two or more hands found,
   the leftmost is the left one and the rightmost the right one (others join the nearer); where they
   touch, the shared pixels are split at the midpoint between them; a single hand is left or right of
   the character's middle. Settings saved for "hands" before the split apply to both. On the preview
