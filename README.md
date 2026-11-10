@@ -307,6 +307,27 @@ Outputs: `character_masks` (each box's part masks with its caption, LoRAs and de
 detailer), `preview` (the image with each part filled solid in its colour, the same wherever it lies, so the
 coloured area is exactly what the detailer redraws; finer parts on top) and `mask` (every part as one mask).
 
+### Prompt writer (optional)
+
+Connect a text model to the optional **`prompt_llm`** input and the node writes the prompt of every ticked
+part that has none, on each run: from the box's caption and, if the model can see images, a crop around
+the part, it writes one short prompt for just that part ("close-up of a detailed realistic hand resting on
+a hip, short purple fingernails"), leaving out the rest of the character. The prompts are used right
+away by the detailer and stored in the editor (marked *generated*), where you can edit them; a part is
+only written again if its prompt is cleared (**Regenerate** in the part's panel does that). Without a
+model, prompts start empty and you write them yourself.
+
+The model is any text encoder that can generate text, loaded with **Load CLIP** and called the way
+ComfyUI's own Generate Text node calls it (no extra installs): Qwen3.5 (the MOSS-Image text encoder itself
+works: connect the same Load CLIP that feeds your prompt encode, so no extra model is loaded), Qwen3-VL,
+Qwen3 or Gemma 3/4. Abliterated ("heretic") versions write more reliably for uncensored captions. Models
+that can't see images (or with **See the part** off) write from the caption alone.
+
+Its settings are in the editor's Settings panel (no box selected): max tokens, temperature, top p/k, min p,
+repetition penalty, seed, **See the part**, and the **System prompt** (its instructions), prefilled with
+the built-in one; **Reset prompt** (enabled once it differs) goes back to it. The built-in instructions
+live in `web/prompt_writer_system.txt`.
+
 ## Regional detailer
 
 **MOSS-Image Regional Detailer** redraws each masked part with its character's prompt and LoRAs.

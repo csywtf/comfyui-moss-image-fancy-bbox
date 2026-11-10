@@ -39,6 +39,23 @@ const SETTINGS = [
   ["refine_iterations", "Refine", 1, "SAM3 mask refinement passes (0 = raw detector masks)."],
 ];
 
+// The prompt writer's settings (hidden widgets of the node), edited in the Settings panel.
+const LLM_SETTINGS = [
+  ["llm_max_length", "Max tokens", 1, "Longest reply, in tokens."],
+  ["llm_temperature", "Temperature", 0.01, "Randomness (0 = always the most likely words)."],
+  ["llm_top_p", "Top p", 0.01, "Only the most likely words that add up to this probability are considered."],
+  ["llm_top_k", "Top k", 1, "Only this many of the most likely words are considered (0 = no limit)."],
+  ["llm_min_p", "Min p", 0.01, "Words less likely than this fraction of the most likely one are left out."],
+  ["llm_repetition_penalty", "Repetition", 0.01, "Penalty for repeating words (1 = none)."],
+  ["llm_seed", "Seed", 1, "Random seed of the prompt writer."],
+];
+// The built-in system prompt: the same file the node reads, so the two never drift apart.
+let defaultSystemPrompt = null;
+const defaultSystemReady = fetch(new URL("./prompt_writer_system.txt", import.meta.url))
+  .then((r) => (r.ok ? r.text() : ""))
+  .catch(() => "")
+  .then((t) => (defaultSystemPrompt = t.trim()));
+
 const CSS = `
 .mcm-boxes{flex:0 0 220px;width:220px;min-width:0}
 .mcm-row{display:flex;align-items:center;gap:5px;padding:3px 5px;border-bottom:1px solid rgba(128,128,128,.2);cursor:default;user-select:none}
@@ -55,6 +72,12 @@ const CSS = `
 .mcm-part .grow{flex:1;align-self:stretch}
 .mcm-part.needs .mcm-part-name{color:#f99}
 .mcm-need-text{font-size:10px;color:#f99}
+.mcm-need-text.writer{color:#9cf}
+.mcm-part.needs.writer .mcm-part-name{color:inherit}
+.mcm-gen{font-size:10px;padding:0 4px;border-radius:3px;background:rgba(80,200,140,.3)}
+.mcm-llm-on{color:#9cf;opacity:1}
+.mcm-system{display:flex;flex-direction:column;gap:3px}
+.mrl-props .mcm-system textarea{min-height:120px;resize:vertical;width:100%;box-sizing:border-box;flex:none;font-size:11px}
 .mcm-need{font:bold 10px/14px sans-serif;width:14px;height:14px;border-radius:7px;background:#c33;color:#fff;text-align:center;flex:0 0 auto}
 .mcm-caption-ref{font-size:11px;line-height:1.35;opacity:.85;padding:4px 6px;border:1px dashed rgba(128,128,128,.5);border-radius:3px;max-height:120px;overflow:auto;white-space:pre-wrap;user-select:text}
 .mrl-sec-title .grow{flex:1}
@@ -143,6 +166,9 @@ class MasksEditor {
     this.ro = this.wrapSize.ro;
     this.canvasRect = frameRect(this.canvas);
     this.poll();
+    defaultSystemReady.then(() => {
+      if (!this.selected) this.renderProps(); // the Settings panel shows the built-in system prompt
+    });
   }
 
   destroy() {
@@ -488,7 +514,7 @@ class MasksEditor {
       this._sigDetail = detailText; // compared, never joined: with paint it can be large
       this._detailVersion = (this._detailVersion || 0) + 1;
     }
-    const sig = [this.src?.text, this.src?.W, this.src?.H, this._detailVersion, ...SETTINGS.map(([n]) => this.widget(n)?.value)].join("\u0001");
+    const sig = [this.src?.text, this.src?.W, this.src?.H, this._detailVersion, this.llmConnected(), ...[...SETTINGS, ...LLM_SETTINGS, ["llm_use_image"], ["llm_system_prompt"]].map(([n]) => this.widget(n)?.value)].join("\u0001");
     if (sig === this.sig) return;
     this.sig = sig;
     this.renderList();
@@ -531,8 +557,21 @@ class MasksEditor {
     this.layers = null;
     this.paintCanvas = null;
     this.renderOptions();
+    // prompts the prompt writer wrote this run: kept as the parts' prompts (one undo step)
+    if (payload.generated && Object.keys(payload.generated).length) {
+      const d = this.doc();
+      if (d.ok) {
+        const next = D.storeGenerated(d.doc, payload.generated, this.boxes().map(({ region }) => region));
+        if (next !== d.doc) this.commitDoc(next);
+      }
+    }
     this.sig = "";
     this.poll();
+  }
+
+  /** Whether a model is connected to the prompt_llm input. */
+  llmConnected() {
+    return !!this.node.inputs?.find((i) => i.name === "prompt_llm")?.link;
   }
 
   // ------------------------------------------------------------------ boxes list
@@ -630,10 +669,69 @@ class MasksEditor {
       });
       rows.push(this.field(label, c, title));
     }
+    return el("div", {}, [
+      el("div", { class: "mrl-sec" }, [
+        el("div", { class: "mrl-sec-title", text: "SAM3" }),
+        ...rows,
+        el("div", { class: "mrl-hint", text: "Select a box to choose which parts are masked and how they are detailed. Tick a box in the list to detail it." }),
+      ]),
+      this.writerSection(),
+    ]);
+  }
+
+  /** The prompt writer's settings: sampling, whether it sees the part, and its system prompt (with Reset). */
+  writerSection() {
+    const rows = [];
+    for (const [name, label, step, title] of LLM_SETTINGS) {
+      const w = this.widget(name);
+      if (!w) continue;
+      const c = el("input", { type: "number", step: String(step), value: String(w.value), title, class: `mcm-${name}` });
+      c.addEventListener("change", () => {
+        let v = Number(c.value);
+        if (!Number.isFinite(v)) return (c.value = String(w.value));
+        const o = w.options || {};
+        if (step === 1) v = Math.round(v);
+        if (o.min != null) v = Math.max(o.min, v);
+        if (o.max != null) v = Math.min(o.max, v);
+        c.value = String(v);
+        this.setWidget(name, v);
+      });
+      rows.push(this.field(label, c, title));
+    }
+    const img = this.widget("llm_use_image");
+    if (img) {
+      const c = el("input", { type: "checkbox", class: "mcm-llm_use_image" });
+      c.checked = img.value !== false;
+      c.addEventListener("change", () => this.setWidget("llm_use_image", c.checked));
+      rows.push(this.field("See the part", c, "Show the model a crop of each part (if it can see images); otherwise it writes from the caption only."));
+    }
+    const sysW = this.widget("llm_system_prompt");
+    let sys = null;
+    if (sysW) {
+      const def = defaultSystemPrompt ?? "";
+      const area = rememberHeight(el("textarea", { class: "mcm-system-prompt", title: "The prompt writer's instructions" }), "systemPrompt");
+      area.value = (sysW.value || "").trim() ? sysW.value : def;
+      const reset = el("button", { class: "mrl-mini mcm-reset-system", text: "Reset prompt", title: "Back to the built-in instructions" });
+      const sync = () => (reset.disabled = area.value.trim() === def.trim());
+      sync();
+      area.addEventListener("input", sync);
+      // stored only when it differs from the built-in one, so later improvements to that reach this node
+      area.addEventListener("change", () => this.setWidget("llm_system_prompt", area.value.trim() && area.value.trim() !== def.trim() ? area.value : ""));
+      reset.addEventListener("click", () => {
+        this.setWidget("llm_system_prompt", "");
+        area.value = def;
+        sync();
+      });
+      sys = el("div", { class: "mcm-system" }, [el("div", { class: "mcm-panel-head" }, [el("span", { class: "grow", text: "System prompt" }), reset]), area]);
+    }
+    const connected = this.llmConnected();
     return el("div", { class: "mrl-sec" }, [
-      el("div", { class: "mrl-sec-title", text: "SAM3" }),
+      el("div", { class: "mrl-sec-title", text: "Prompt writer" }),
+      el("div", { class: connected ? "mrl-hint mcm-llm-on" : "mrl-hint", text: connected
+        ? "A text model is connected to prompt_llm: on each run it writes the prompt of every ticked part that has none, from the box's caption and a crop of the part. You can edit what it writes."
+        : "Optional: connect a text model (Load CLIP, e.g. your MOSS-Image text encoder) to prompt_llm and every ticked part without a prompt gets one written on the next run." }),
       ...rows,
-      el("div", { class: "mrl-hint", text: "Select a box to choose which parts are masked and how they are detailed. Tick a box in the list to detail it." }),
+      sys,
     ]);
   }
 
@@ -708,11 +806,16 @@ class MasksEditor {
         this.renderProps();
       };
       rows.push(
-        el("div", { class: `mcm-part${open ? " open" : ""}${needsPrompt ? " needs" : ""}`, "data-part": p.name }, [
+        el("div", { class: `mcm-part${open ? " open" : ""}${needsPrompt ? " needs" : ""}${needsPrompt && this.llmConnected() ? " writer" : ""}`, "data-part": p.name }, [
           on,
           el("span", { class: "mcm-chip", style: `background:${p.color}` }),
           el("span", { class: "mcm-part-name", text: p.label + (known && rb.found[p.name] ? " ✓" : ""), onclick: toggle }),
-          needsPrompt ? el("span", { class: "mcm-need-text", text: "needs a prompt", title: "The detailer won't run until every ticked part has a prompt: open it to write one" }) : null,
+          needsPrompt
+            ? this.llmConnected()
+              ? el("span", { class: "mcm-need-text writer", text: "written on next run", title: "The connected prompt writer will write this part's prompt on the next run (if the part is found)" })
+              : el("span", { class: "mcm-need-text", text: "needs a prompt", title: "The detailer won't run until every ticked part has a prompt: open it to write one, or connect a prompt writer" })
+            : null,
+          !needsPrompt && s.generated ? el("span", { class: "mcm-gen", text: "generated", title: "Written by the prompt writer; edit it freely" }) : null,
           edited ? el("span", { class: "mcm-mod", text: "edited", title: "This part has its own denoise, restore or crop settings" }) : null,
           el("span", { class: "grow", onclick: toggle }),
           el("button", { class: "mrl-mini mcm-edit", icon: open ? "chevron-down" : "chevron-right", title: `${open ? "Close" : "Edit"} the ${p.label}'s prompt and detail settings`, onclick: toggle }),
@@ -735,8 +838,18 @@ class MasksEditor {
     prompt.value = s.full_prompt || "";
     prompt.addEventListener("change", () => {
       const v = prompt.value.trim();
-      this.updateDetail(region, (x) => (x.parts[p.name].full_prompt = v ? prompt.value : null));
+      this.updateDetail(region, (x) => {
+        x.parts[p.name].full_prompt = v ? prompt.value : null;
+        x.parts[p.name].generated = false; // yours now
+      });
     });
+    const regen = this.llmConnected() && s.full_prompt
+      ? el("button", { class: "mrl-mini mcm-regenerate", text: "Regenerate", title: "Clear this prompt: the prompt writer writes a new one on the next run",
+          onclick: () => this.updateDetail(region, (x) => {
+            x.parts[p.name].full_prompt = null;
+            x.parts[p.name].generated = false;
+          }) })
+      : null;
     const unit = (key, title) => {
       const input = el("input", { type: "number", min: "0", max: "1", step: "0.05", class: `mcm-${key}`, value: s[key] == null ? "" : String(s[key]), placeholder: "default", title });
       input.addEventListener("change", () => {
@@ -751,7 +864,7 @@ class MasksEditor {
     return el("div", { class: "mcm-panel" }, [
       el("div", { class: "mcm-panel-head", text: "Character prompt (for reference)" }),
       el("div", { class: "mcm-caption-ref", text: region.caption || "This box has no caption." }),
-      el("div", { class: "mcm-panel-head", text: "Prompt" }),
+      el("div", { class: "mcm-panel-head" }, [el("span", { class: "grow", text: "Prompt" }), regen]),
       prompt,
       this.field("Denoise", unit("denoise", ""), `How much the ${p.label} is redrawn (empty: the detailer's default)`),
       this.field("Restore", unit("restore", ""), `Detail restore for the ${p.label}: 1 keeps the original's fine texture, 0 lets the redraw replace it (to change its style). Empty: the detailer's default`),

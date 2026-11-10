@@ -24,7 +24,7 @@ const DEFAULT_ON = ["face", "eyes"];
 
 export function defaultDetail(label) {
   const parts = {};
-  for (const n of PART_NAMES) parts[n] = { on: DEFAULT_ON.includes(n), prompt: "", denoise: null, restore: null, whole_crop: false, full_prompt: null };
+  for (const n of PART_NAMES) parts[n] = { on: DEFAULT_ON.includes(n), prompt: "", denoise: null, restore: null, whole_crop: false, full_prompt: null, generated: false };
   return { enabled: label === "character", prompt: "", use_box_loras: true, loras: [], lora_list: null, parts, paint: {} };
 }
 
@@ -98,6 +98,7 @@ export function detailFor(doc, region) {
           restore: unit(p.restore),
           whole_crop: typeof p.whole_crop === "boolean" ? p.whole_crop : false,
           full_prompt: typeof p.full_prompt === "string" && p.full_prompt.trim() ? p.full_prompt : null,
+          generated: p.generated === true, // written by the prompt writer and not edited since (editor only)
         }
       : base.parts[n];
   }
@@ -268,4 +269,24 @@ export function detailLoras(boxEntries, detail) {
 export function lorasEdited(boxEntries, detail) {
   const key = (l) => JSON.stringify(l.map((e) => [e.lora, e.weight]));
   return key(editableLoras(boxEntries, detail)) !== key(boxLoras(boxEntries));
+}
+
+/** The document with prompts the prompt writer wrote ({box id: {part: prompt}}) stored for parts that still have
+ * none (a prompt typed meanwhile wins), marked as generated. ``regions``: [{id, label}] of the boxes. */
+export function storeGenerated(doc, generated, regions) {
+  let next = doc;
+  for (const [id, parts] of Object.entries(generated || {})) {
+    const region = (regions || []).find((r) => r.id === id);
+    if (!region) continue; // a box that's gone since the run
+    const d = detailFor(next, region);
+    let changed = false;
+    for (const [part, text] of Object.entries(parts || {})) {
+      if (!d.parts[part] || partPrompt(d, part) || typeof text !== "string" || !text.trim()) continue;
+      d.parts[part].full_prompt = text.trim();
+      d.parts[part].generated = true;
+      changed = true;
+    }
+    if (changed) next = setDetail(next, id, d);
+  }
+  return next;
 }

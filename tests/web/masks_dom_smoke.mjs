@@ -59,12 +59,21 @@ const main = { widgets: [
 window.main = main;
 function Node() {
   this.size = [1080, 600];
-  this.inputs = [{ name: "image", link: 1 }, { name: "regions", link: 2 }, { name: "sam3_model", link: 3 }, { name: "sam3_clip", link: 4 }];
+  this.inputs = [{ name: "image", link: 1 }, { name: "regions", link: 2 }, { name: "sam3_model", link: 3 }, { name: "sam3_clip", link: 4 }, { name: "prompt_llm", link: null }];
   this.widgets = [
     { name: "threshold", value: 0.5, options: { min: 0, max: 1 } },
     { name: "box_margin", value: 0.15, options: { min: 0, max: 1 } },
     { name: "refine_iterations", value: 2, options: { min: 0, max: 5 } },
     { name: "detail", value: '{"version": 1, "boxes": {}}' },
+    { name: "llm_max_length", value: 160, options: { min: 16, max: 2048 } },
+    { name: "llm_temperature", value: 0.7, options: { min: 0, max: 2 } },
+    { name: "llm_top_p", value: 0.95, options: { min: 0, max: 1 } },
+    { name: "llm_top_k", value: 64, options: { min: 0, max: 1000 } },
+    { name: "llm_min_p", value: 0.05, options: { min: 0, max: 1 } },
+    { name: "llm_repetition_penalty", value: 1.05, options: { min: 0, max: 5 } },
+    { name: "llm_seed", value: 0, options: { min: 0 } },
+    { name: "llm_use_image", value: true },
+    { name: "llm_system_prompt", value: "" },
   ];
 }
 Node.prototype.getInputNode = function (slot) { return slot === 1 && this.inputs[1].link != null ? main : null; };
@@ -189,6 +198,32 @@ assert.match(await page.locator(".mrl-props .mrl-panel-head").innerText(), /Mask
 await page.locator(".mrl-props .mrl-field", { hasText: "Threshold" }).locator("input").fill("0.35");
 await page.locator(".mrl-props .mrl-field", { hasText: "Threshold" }).locator("input").press("Tab");
 assert.equal(await wv("threshold"), 0.35);
+// the prompt writer's settings, and its system prompt: prefilled with the built-in one, Reset once changed
+const DEFAULT_SYSTEM = readFileSync(join(ROOT, "web", "prompt_writer_system.txt"), "utf8").trim();
+await page.locator(".mrl-props .mrl-field", { hasText: "Temperature" }).locator("input").fill("0.4");
+await page.locator(".mrl-props .mrl-field", { hasText: "Temperature" }).locator("input").press("Tab");
+assert.equal(await wv("llm_temperature"), 0.4);
+await page.locator(".mrl-props .mrl-field", { hasText: "Max tokens" }).locator("input").fill("99999");
+await page.locator(".mrl-props .mrl-field", { hasText: "Max tokens" }).locator("input").press("Tab");
+assert.equal(await wv("llm_max_length"), 2048);                                              // clamped
+await page.locator(".mrl-props input.mcm-llm_use_image").uncheck();
+assert.equal(await wv("llm_use_image"), false);
+const sysArea = page.locator(".mrl-props textarea.mcm-system-prompt");
+const sysReset = page.locator(".mrl-props button.mcm-reset-system");
+await page.waitForFunction((d) => document.querySelector(".mrl-props textarea.mcm-system-prompt")?.value.trim() === d, DEFAULT_SYSTEM);
+assert.equal(await sysReset.isDisabled(), true);
+await sysArea.fill("Write a short prompt for the part.");
+await sysArea.press("Tab");
+assert.equal(await wv("llm_system_prompt"), "Write a short prompt for the part.");
+assert.equal(await sysReset.isDisabled(), false);
+await sysReset.click();
+assert.equal(await wv("llm_system_prompt"), "");                                            // built-in again
+assert.equal((await sysArea.inputValue()).trim(), DEFAULT_SYSTEM);
+assert.match(await page.locator(".mrl-props").innerText(), /Optional: connect a text model/);
+if (process.argv[2]) {
+  await page.locator(".mrl-props .mrl-panel-body").evaluate((e) => (e.scrollTop = 0));
+  await page.locator(".mrl-props").screenshot({ path: process.argv[2].replace(/\.png$/, "-settings.png") });
+}
 console.log("settings ok");
 
 // 3. per-box detail settings land in the hidden widget
@@ -317,6 +352,46 @@ assert.equal(await hoverText(64, 52), "Alice · left hand");
 assert.equal(await hoverText(40, 30), "Alice · face");
 assert.equal(await hoverText(90, 70), null);                                                 // outline only
 console.log("hand tags ok");
+
+// prompt writer: with a model connected, missing prompts read "written on next run"; prompts it wrote are
+// stored (marked generated, a typed one wins), and Regenerate clears one for the next run
+await page.evaluate(() => { window.node.inputs[4].link = 5; });
+if (!/Detail: Bob/.test(await page.locator(".mrl-props .mrl-panel-head").innerText())) await row("Bob").click();
+await page.waitForFunction(() => document.querySelector('.mcm-part[data-part="face"] .mcm-need-text.writer'));
+await page.evaluate(() => window.node.onExecuted({ moss_character_masks: [{
+  image: { filename: "img.png", subfolder: "", type: "temp" }, labels: { filename: "lab.png", subfolder: "", type: "temp" },
+  width: 200, height: 100, parts: ["face", "eyes", "left_hand", "right_hand", "hair", "skin"],
+  boxes: [{ id: "alice", name: "Alice", outline_found: true, found: { face: true, eyes: true, left_hand: false } },
+          { id: "bob", name: "Bob", outline_found: false, found: { face: true, eyes: false } }],
+  llm: true, generated: { bob: { face: "close-up of a bearded face, warm light" } },
+}] }));
+await page.waitForFunction(() => document.querySelector('.mcm-part[data-part="face"] .mcm-gen'));
+d = await detail();
+assert.equal(d.boxes.bob.parts.face.full_prompt, "close-up of a bearded face, warm light");
+assert.equal(d.boxes.bob.parts.face.generated, true);
+await hoverCanvas();
+await page.keyboard.press("Control+z");                                                        // one undo step
+assert.equal((await detail()).boxes.bob?.parts?.face?.full_prompt ?? null, null);
+await page.keyboard.press("Control+Shift+z");
+assert.equal((await detail()).boxes.bob.parts.face.full_prompt, "close-up of a bearded face, warm light");
+await page.locator('.mcm-part[data-part="face"] .mcm-edit').click();
+await page.locator(".mcm-panel button.mcm-regenerate").click();
+d = await detail();
+assert.equal(d.boxes.bob.parts.face.full_prompt, null);
+assert.equal(await page.locator('.mcm-part[data-part="face"] .mcm-need-text.writer').count(), 1);
+await page.locator(".mcm-panel textarea.mcm-part-prompt").fill("a bearded face");               // typing makes it yours
+await page.locator(".mcm-panel textarea.mcm-part-prompt").press("Tab");
+d = await detail();
+assert.equal(d.boxes.bob.parts.face.generated, false);
+await page.evaluate(() => window.node.onExecuted({ moss_character_masks: [{
+  image: { filename: "img.png", subfolder: "", type: "temp" }, labels: { filename: "lab.png", subfolder: "", type: "temp" },
+  width: 200, height: 100, parts: ["face"], boxes: [{ id: "bob", name: "Bob", outline_found: true, found: { face: true } }],
+  llm: true, generated: { bob: { face: "something else" } },
+}] }));
+assert.equal((await detail()).boxes.bob.parts.face.full_prompt, "a bearded face");               // typed one wins
+await page.locator('.mcm-part[data-part="face"] .mcm-edit').click();
+await page.evaluate(() => { window.node.inputs[4].link = null; });
+console.log("prompt writer ok");
 
 // 5. painting: brushes add to / remove from the target, undo / redo, painting a part ticks it, Protect, wand
 async function imgPx(x, y) {
