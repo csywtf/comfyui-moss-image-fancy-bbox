@@ -68,6 +68,17 @@ and output, and compile without graph breaks).
 Outputs: `model`, `prompt`, `width`/`height` (the canvas size, for the empty latent node) and
 `regions` (the boxes plus the canvas size, for *MOSS-Image Character Masks*).
 
+Optional inputs, for values that come from other nodes:
+
+- `width_input`, `height_input`: the canvas size from another node (a resolution or image-size node). They
+  replace the size set in the Canvas panel, rounded down to whole 16 px cells like the empty latent node;
+  the panel then shows the size used, read-only (read live from a primitive such as *Int* or from a
+  *Resolution Selector*, otherwise after each run). Boxes keep their pixel positions from the centre when
+  the size changes.
+- `caption_input`: the whole-image caption from another node (a text, prompt or LLM node). It replaces the
+  caption set in the Canvas panel, which then shows it read-only (live from a *String* primitive,
+  otherwise after each run). Box captions still come from the boxes.
+
 Settings: all of them are in the editor's **Canvas** panel (shown when no box is selected). On the
 node they are ordinary inputs that the editor hides, so they are saved with the workflow and sent
 through the API under the names below. A setting whose input is wired to another node shows as
@@ -75,8 +86,8 @@ read-only in the panel, since the wired value is the one used.
 
 | setting | meaning |
 |---|---|
-| `width`, `height` | output canvas in pixels; must match the latent being sampled (checked at run time). Rounded to whole 16 px latent cells. The token grid itself is read from the latent, so there is no VAE-downscale or patch-size setting |
-| `caption` | description of the whole image: the layout prompt's summary caption. With no captioned boxes, `prompt` is just this text |
+| `width`, `height` | output canvas in pixels; must match the latent being sampled (checked at run time). Rounded to whole 16 px latent cells. The token grid itself is read from the latent, so there is no VAE-downscale or patch-size setting. Replaced by the `width_input` / `height_input` sockets when they are connected |
+| `caption` | description of the whole image: the layout prompt's summary caption. With no captioned boxes, `prompt` is just this text. Replaced by the `caption_input` socket when it is connected |
 | `strict` | on: refuse to apply LoRAs while the layout is unverified and raise on any alignment problem. Off: pass the model through untouched (with a warning) instead. Prompt-only boxes work either way |
 | `regions` | the region list as JSON; drawn and edited by the editor, viewable and pasteable with **Edit JSON** (see *Region editor*) |
 | `ramp_start`, `ramp_end` | *Advanced*, legacy: a linear fade-in used only by LoRAs **without** their own strength curve (workflows saved before curves). New LoRAs get their own curve (see *Strength curves*) |

@@ -250,6 +250,33 @@ await page.waitForFunction(() => document.querySelector(".mrl-props textarea.mrl
 if (process.argv[4]) await page.screenshot({ path: process.argv[4] });
 console.log("canvas settings ok");
 
+// width_input / height_input / caption_input: a value from a socket is shown read-only, live from a primitive,
+// else from the last run; neither is written into the node's widgets (that would re-run it on the next queue)
+const socketWidgets = () => page.evaluate(() => ["caption", "width", "height"].map((n) => window.node.widgets.find((w) => w.name === n).value));
+const shown = (sel) => page.evaluate((s) => { const e = document.querySelector(s); return e && [e.value, e.disabled]; }, sel);
+const socketBefore = await socketWidgets();
+await page.evaluate(() => {
+  const text = { id: 7, type: "PrimitiveStringMultiline", outputs: [{}], widgets: [{ name: "value", value: "a live caption" }] };
+  const size = { id: 8, type: "SomeResolution", outputs: [{}, {}], widgets: [] }; // only a run knows its value
+  const graph = window.__app.graph;
+  graph.getNodeById = (id) => ({ 7: text, 8: size })[id] ?? null;
+  graph.links = { 903: { origin_id: 7, origin_slot: 0 }, 904: { origin_id: 8, origin_slot: 0 } };
+  window.node.inputs = [...(window.node.inputs || []), { name: "caption_input", link: 903 }, { name: "width_input", link: 904 }];
+  window.__captionSource = text;
+});
+await page.waitForFunction(() => document.querySelector(".mrl-props textarea.mrl-caption")?.value === "a live caption", null, { timeout: 2000 });
+assert.deepEqual(await shown(".mrl-props textarea.mrl-caption"), ["a live caption", true]);
+await page.evaluate(() => {
+  window.__captionSource.outputs.push({}); // now a node whose text only a run knows
+  window.node.onExecuted({ moss_regional_lora: [{ status: "prompt-only", caption: "from the run", width: 640, height: 384 }] });
+});
+await page.waitForFunction(() => document.querySelector(".mrl-props textarea.mrl-caption")?.value === "from the run", null, { timeout: 2000 });
+assert.deepEqual(await shown(".mrl-size input"), ["640", true]);
+assert.deepEqual(await socketWidgets(), socketBefore);
+await page.evaluate(() => { window.node.inputs = window.node.inputs.filter((i) => !["caption_input", "width_input"].includes(i.name)); });
+await page.waitForFunction(() => document.querySelector(".mrl-props textarea.mrl-caption")?.disabled === false, null, { timeout: 2000 });
+console.log("input sockets ok");
+
 // 5c. Edit JSON: invalid text is refused with a message, valid text replaces the boxes (undoable)
 const before = await page.locator("#raw").inputValue();
 await page.locator(".mrl-props button", { hasText: "Edit JSON" }).click();

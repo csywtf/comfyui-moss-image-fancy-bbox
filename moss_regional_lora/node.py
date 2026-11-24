@@ -106,6 +106,13 @@ def regions_with_canvas(regions: str, width: int, height: int) -> str:
     return json.dumps(data, ensure_ascii=False)
 
 
+def _canvas_side(linked, own):
+    """width_input / height_input rounded down to whole 16 px cells like the empty latent node, else `own`."""
+    if linked is None:
+        return own
+    return max(16, int(linked) // 16 * 16)
+
+
 def _strip_previous(m):
     """Remove an earlier execution's injection and wrapper so re-execution replaces, not stacks (FR-10)."""
     from comfy.patcher_extension import WrappersMP
@@ -162,6 +169,18 @@ class MossRegionalLora:
                     "tooltip": "Where an edit pipeline's source-image tokens sit in the sequence. "
                                "Default measured by the MOSS-Image Layout Discovery node; re-run it after a "
                                "ComfyUI update."}),
+                # sockets, not widgets (forceInput), so saved widget values keep their positions
+                "width_input": ("INT", {"forceInput": True,
+                                        "tooltip": "Optional: the canvas width from another node (an image-size or "
+                                                   "resolution node). Replaces the width set in the editor; rounded "
+                                                   "down to whole 16 px cells, like the empty latent node."}),
+                "height_input": ("INT", {"forceInput": True,
+                                         "tooltip": "Optional: the canvas height from another node. Replaces the "
+                                                    "height set in the editor; rounded down to whole 16 px cells."}),
+                "caption_input": ("STRING", {"forceInput": True,
+                                             "tooltip": "Optional: the whole-image caption from another node (a "
+                                                        "text or prompt node). Replaces the caption set in the "
+                                                        "editor."}),
             },
         }
 
@@ -188,11 +207,14 @@ class MossRegionalLora:
         return _lora_fingerprint(regions)
 
     def apply(self, model, width, height, regions, ramp_start, ramp_end, steps,
-              strict, caption="", text_position=None, image_order=None, source_tokens=None):
+              strict, caption="", text_position=None, image_order=None, source_tokens=None,
+              width_input=None, height_input=None, caption_input=None):
         # an API prompt without these options gets the same defaults as the UI
         text_position = MEASURED_TEXT_POSITION if text_position is None else text_position
         image_order = MEASURED_IMAGE_ORDER if image_order is None else image_order
         source_tokens = MEASURED_SOURCE_TOKENS if source_tokens is None else source_tokens
+        width, height = _canvas_side(width_input, width), _canvas_side(height_input, height)
+        caption = caption if caption_input is None else caption_input
         doc = parse_document(regions)
         for n in doc.notes:
             log.info("[MOSS Regional LoRA] %s", n)
@@ -203,6 +225,10 @@ class MossRegionalLora:
         def out(summary):
             summary.setdefault("prompt_items", len(doc.prompt_items))
             summary.setdefault("notes", doc.notes)
+            # for the editor: the canvas actually used, and a caption that came from another node
+            summary["width"], summary["height"] = width, height
+            if caption_input is not None:
+                summary["caption"] = caption
             return {"ui": {"moss_regional_lora": [summary]}, "result": (m, prompt, width, height, regions_with_canvas(regions, width, height))}
 
         specs = doc.loras

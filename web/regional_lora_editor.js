@@ -20,6 +20,7 @@ import { CurvePanel, drawSparkline } from "./curve_panel.js";
 import { icon } from "./icons.js";
 import { dropRemovedGridValues } from "./migrate.js";
 import { Viewport, frameRect, installKeySink, installPanZoom, isKeySink, trackSize, zoomInFactor, zoomOutFactor } from "./viewport.js";
+import { canvasSide, liveNumber, liveText } from "./sources.js";
 
 const NODE_NAME = "MossRegionalLora";
 const EDITOR_WIDGET = "region_editor";
@@ -221,6 +222,29 @@ export function loraList() {
       .catch(() => []);
   }
   return loraListPromise.p;
+}
+
+/** A link by id (graph.links is a Map in newer frontends, an object in older ones). */
+function graphLink(graph, id) {
+  return graph?.getLink?.(id) ?? graph?.links?.get?.(id) ?? graph?.links?.[id];
+}
+
+/** {node, slot} feeding input `name` (through legacy Reroute nodes), or null. */
+function inputSource(node, name) {
+  const graph = node.graph || app.graph;
+  let cur = node;
+  let slot = (node.inputs || []).findIndex((i) => i.name === name);
+  for (let hops = 0; hops < 16 && slot >= 0; hops++) {
+    const id = cur.inputs?.[slot]?.link;
+    if (id == null) return null;
+    const link = graphLink(graph, id);
+    const src = link ? graph.getNodeById(link.origin_id) : cur.getInputNode?.(slot);
+    if (!src) return null;
+    if (src.type !== "Reroute") return { node: src, slot: link?.origin_slot ?? 0 };
+    cur = src;
+    slot = 0;
+  }
+  return null;
 }
 
 function inputFileList() {
@@ -462,9 +486,27 @@ class RegionEditor {
   }
 
   canvasSize() {
-    const w = Math.max(1, Math.round(Number(this.wWidth?.value) || 1024));
-    const h = Math.max(1, Math.round(Number(this.wHeight?.value) || 1024));
-    return { W: w, H: h };
+    return { W: this.canvasSideValue("width", this.wWidth), H: this.canvasSideValue("height", this.wHeight) };
+  }
+
+  /** A canvas side; from width_input / height_input when wired: live from a primitive or a Resolution
+   * Selector, else the size of the last run (setStatus). */
+  canvasSideValue(name, w) {
+    const own = Math.max(1, Math.round(Number(w?.value) || 1024));
+    const src = inputSource(this.node, `${name}_input`);
+    const live = src ? liveNumber(src.node, src.slot) : null;
+    if (live != null) return canvasSide(live);
+    return src && Number.isFinite(this.ran?.[name]) ? this.ran[name] : own;
+  }
+
+  /** The caption from caption_input: live from a text primitive, else the last run's, else null. */
+  linkedCaption() {
+    const src = inputSource(this.node, "caption_input");
+    return src ? liveText(src.node) ?? this.ran?.caption ?? null : null;
+  }
+
+  socketLinked(name) {
+    return (this.node.inputs || []).some((i) => i.name === name && i.link != null);
   }
 
   poll() {
@@ -480,7 +522,8 @@ class RegionEditor {
     // only while it is not being typed in, so typing keeps its focus
     if (document.activeElement !== this.captionInput) this.captionSeen = this.wCaption?.value;
     const settings = [...SETTINGS, ...ADVANCED].map(([n]) => this.widget(n)?.value).join(":");
-    const d = `${W}x${H}:${settings}:${this.captionSeen}:${this.linkedNames().join(",")}`;
+    const sockets = ["width_input", "height_input", "caption_input"].map((n) => +this.socketLinked(n)).join("");
+    const d = `${W}x${H}:${settings}:${this.captionSeen}:${this.linkedNames().join(",")}:${sockets}:${this.linkedCaption()}`;
     if (d !== this.lastDims) {
       this.lastDims = d;
       this.renderAll();
@@ -1176,6 +1219,15 @@ class RegionEditor {
     const linked = this.linkedNames();
     const wIn = this.settingControl("width", "size", "Width in pixels of the image being generated");
     const hIn = this.settingControl("height", "size", "Height in pixels of the image being generated");
+    // a size from the width_input / height_input socket shows the value used, read-only
+    const { W, H } = this.canvasSize();
+    for (const [name, c, v] of [["width", wIn, W], ["height", hIn, H]]) {
+      if (c && this.socketLinked(`${name}_input`)) {
+        c.value = String(v);
+        c.disabled = true;
+        c.title = `From the node connected to ${name}_input (rounded down to whole 16 px cells). Read live from a primitive or a Resolution Selector; otherwise updated after each run.`;
+      }
+    }
     const swap = el("button", {
       icon: "arrow-left-right",
       class: "mrl-mini",
@@ -1187,10 +1239,12 @@ class RegionEditor {
         this.poll();
       },
     });
-    if (linked.includes("width") || linked.includes("height")) swap.disabled = true;
+    const wired = ["width", "height"].some((n) => linked.includes(n) || this.socketLinked(`${n}_input`));
+    if (wired) swap.disabled = true;
     return el("div", { class: "mrl-sec mrl-keep" }, [
       el("div", { class: "mrl-sec-title", text: "Image" }),
       el("div", { class: "mrl-size" }, [el("span", { text: "W", style: "opacity:.75" }), wIn, el("span", { text: "H", style: "opacity:.75" }), hIn, swap]),
+      wired ? el("div", { class: "mrl-hint", text: "Size from the connected node; boxes keep their pixel positions from the centre." }) : null,
       el("div", { class: "mrl-hint", text: "Connect the width/height outputs to the empty latent node so the image always matches these boxes." }),
     ]);
   }
@@ -1204,7 +1258,13 @@ class RegionEditor {
     area.addEventListener("input", () => this.setWidget("caption", area.value));
     area.addEventListener("keydown", (e) => e.stopPropagation()); // typing is not an editor shortcut
     area.addEventListener("blur", () => this.poll());
-    if (this.linkedNames().includes("caption")) {
+    if (this.socketLinked("caption_input")) {
+      // a caption from the caption_input socket is shown, read-only
+      area.value = this.linkedCaption() ?? "";
+      area.placeholder = "From the node connected to caption_input (shown after a run)";
+      area.disabled = true;
+      area.title = "From the node connected to caption_input. Read live from a text primitive; otherwise updated after each run.";
+    } else if (this.linkedNames().includes("caption")) {
       area.disabled = true;
       area.title = "Connected to another node's output; that value is used.";
     }
@@ -1517,6 +1577,9 @@ class RegionEditor {
 
   setStatus(summary) {
     if (!summary) return;
+    // what the run used (a socket-fed size or caption), for display only: written into the hidden widgets it
+    // would change this node's inputs and re-run it, and the whole image, on the next queue
+    this.ran = { width: summary.width, height: summary.height, caption: summary.caption };
     const items = summary.prompt_items != null ? ` · ${summary.prompt_items} layout prompt item(s)` : "";
     if (summary.status === "active") {
       this.status = `Last run: ${summary.regions} LoRA(s) on boxes, ${summary.applied} LoRA layer(s) on ${summary.modules} module(s), ${summary.skipped} key(s) skipped${items}`;
